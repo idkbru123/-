@@ -33,7 +33,6 @@ tag_spam_tracker = {}
 def is_high_permission():
     async def predicate(ctx):
         p = ctx.author.guild_permissions
-        # Cho phép nếu có bất kỳ quyền cao nào dưới đây:
         if p.administrator or p.manage_messages or p.kick_members or p.ban_members or p.manage_guild:
             return True
         raise commands.CheckFailure("Lỗi thiếu quyền")
@@ -105,7 +104,8 @@ async def autodelete(ctx, member: discord.Member):
         auto_delete_list.append(member.id)
         await ctx.send(f"Đã bật TỰ ĐỘNG XÓA tin nhắn của {member.mention}.")
     else:
-        await ctx.send(f"{member.mention} đã nằm trong danh sách đen từ trước.")
+        # Thông báo nhắc nhở khi đã bật từ trước
+        await ctx.send(f"Bạn đã dùng lệnh này rồi và hiện tại đang tự động xóa tin nhắn của {member.mention}.")
 
 @bot.command(name="stopdelete")
 @is_high_permission()
@@ -116,7 +116,18 @@ async def stopdelete(ctx, member: discord.Member):
             del tag_spam_tracker[member.id]
         await ctx.send(f"Đã tắt tự động xóa tin nhắn đối với {member.mention}.")
     else:
-        await ctx.send(f"{member.mention} không nằm trong danh sách đen.")
+        await ctx.send(f"{member.mention} hiện không nằm trong danh sách tự động xóa.")
+
+# LỆNH XEM DANH SÁCH NHỮNG NGƯỜI ĐANG BỊ TỰ ĐỘNG XÓA TIN NHẮN
+@bot.command(name="listdelete")
+@is_high_permission()
+async def listdelete(ctx):
+    if not auto_delete_list:
+        await ctx.send("Hiện tại không có ai trong danh sách tự động xóa tin nhắn.")
+    else:
+        members_mentions = [f"<@{user_id}>" for user_id in auto_delete_list]
+        list_str = ", ".join(members_mentions)
+        await ctx.send(f"📋 **Danh sách đang bị tự động xóa tin nhắn:** {list_str}")
 
 # BÁO LỖI NẾU NGƯỜI DÙNG KHÔNG CÓ QUYỀN HOẶC GÕ THIẾU TÊN
 @autodelete.error
@@ -124,7 +135,7 @@ async def stopdelete(ctx, member: discord.Member):
 async def command_permission_error(ctx, error):
     if isinstance(error, commands.CheckFailure):
         await ctx.send(
-            f"❌ {ctx.author.mention}, m có quyền cao del đâu mà sài",
+            f"❌ {ctx.author.mention}, bạn cần có quyền Quản trị / Staff trong server mới dùng được lệnh này!",
             delete_after=10
         )
     elif isinstance(error, commands.MissingRequiredArgument):
