@@ -44,7 +44,6 @@ def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
-# Load dữ liệu từ file (thay vì để trống như trước)
 auto_delete_dict = load_data()
 tag_spam_tracker = {}
 
@@ -125,7 +124,7 @@ async def on_message(message):
             
     await bot.process_commands(message)
 
-# --- 3. LỆNH ĐIỀU KHIỂN ---
+# --- 3. LỆNH ĐIỀU KHIỂN CÓ TÍCH HỢP QUÉT LỊCH SỬ CHAT ---
 
 @bot.command(name="autodelete")
 @is_high_permission()
@@ -138,21 +137,34 @@ async def autodelete(ctx, *, target: str):
 
     if clean_target.isdigit():
         target_id = int(clean_target)
-        member = ctx.guild.get_member(target_id)
         
         if target_id == ctx.author.id:
             return await ctx.send("❌ Bạn không thể tự bật tính năng tự động xóa tin nhắn của chính mình!")
         if target_id == bot.user.id:
             return await ctx.send("❌ Không thể bật tính năng tự động xóa tin nhắn cho Bot!")
 
-        display_str = f"Bot {member.mention}" if (member and member.bot) else (f"{member.mention}" if member else f"ID `{target_id}`")
+        if target_id in auto_delete_dict[guild_id_str]["ids"]:
+            return await ctx.send(f"Bạn đã dùng lệnh này rồi và hiện tại đang tự động xóa tin nhắn của ID `{target_id}`.")
 
-        if target_id not in auto_delete_dict[guild_id_str]["ids"]:
+        # 1. Kiểm tra xem có trong server không
+        member = ctx.guild.get_member(target_id)
+        found_in_history = False
+
+        # 2. Nếu không có trong server, quét 100 tin nhắn gần nhất xem có gửi gì không
+        if not member:
+            async for msg in ctx.channel.history(limit=100):
+                if msg.author.id == target_id or msg.webhook_id == target_id:
+                    found_in_history = True
+                    break
+
+        if member or found_in_history:
             auto_delete_dict[guild_id_str]["ids"].append(target_id)
-            save_data(auto_delete_dict) # Lưu lại ngay lập tức
-            await ctx.send(f"Đã bật tự động xóa tin nhắn của {display_str} tại máy chủ này.")
+            save_data(auto_delete_dict)
+            
+            display_str = f"Bot {member.mention}" if (member and member.bot) else (f"{member.mention}" if member else f"ID `{target_id}` (Webhook/Bot ngoài)")
+            await ctx.send(f"✅ Đã bật tự động xóa tin nhắn của {display_str} tại máy chủ này.")
         else:
-            await ctx.send(f"Bạn đã dùng lệnh này rồi và hiện tại đang tự động xóa tin nhắn của {display_str}.")
+            await ctx.send(f"❌ Không tìm thấy ID `{target_id}` trong server, và cũng không thấy ID này gửi tin nhắn nào gần đây. **Đã hủy thêm vào danh sách.**")
             
     else:
         target_name = target.lower()
@@ -161,12 +173,26 @@ async def autodelete(ctx, *, target: str):
         if target_name in [bot.user.name.lower(), getattr(bot.user, 'display_name', '').lower()]:
             return await ctx.send("❌ Không thể bật tính năng tự động xóa tin nhắn cho Bot!")
 
-        if target_name not in auto_delete_dict[guild_id_str]["names"]:
+        if target_name in auto_delete_dict[guild_id_str]["names"]:
+            return await ctx.send(f"Bạn đã dùng lệnh này rồi và hiện tại đang tự động xóa tin nhắn của TÊN/WEBHOOK `{target}`.")
+
+        # 1. Kiểm tra xem có ai tên này trong server không
+        member = discord.utils.find(lambda m: m.name.lower() == target_name or getattr(m, 'display_name', '').lower() == target_name, ctx.guild.members)
+        found_in_history = False
+
+        # 2. Nếu không có trong server, quét 100 tin nhắn gần nhất
+        if not member:
+            async for msg in ctx.channel.history(limit=100):
+                if msg.author.name.lower() == target_name or getattr(msg.author, 'display_name', '').lower() == target_name:
+                    found_in_history = True
+                    break
+
+        if member or found_in_history:
             auto_delete_dict[guild_id_str]["names"].append(target_name)
-            save_data(auto_delete_dict) # Lưu lại ngay lập tức
-            await ctx.send(f"Đã bật tự động xóa tin nhắn đối với TÊN/WEBHOOK `{target}` tại máy chủ này.")
+            save_data(auto_delete_dict)
+            await ctx.send(f"✅ Đã bật tự động xóa tin nhắn đối với `{target}` tại máy chủ này.")
         else:
-            await ctx.send(f"Bạn đã dùng lệnh này rồi và hiện tại đang tự động xóa tin nhắn của TÊN/WEBHOOK `{target}`.")
+            await ctx.send(f"❌ Không tìm thấy `{target}` trong server, và cũng không thấy Tên/Webhook này gửi tin nhắn nào gần đây. **Đã hủy thêm vào danh sách.**")
 
 @bot.command(name="stopdelete")
 @is_high_permission()
@@ -188,7 +214,7 @@ async def stopdelete(ctx, *, target: str):
             removed = True
 
     if removed:
-        save_data(auto_delete_dict) # Cập nhật file sau khi xóa
+        save_data(auto_delete_dict)
         await ctx.send(f"✅ Đã tắt tự động xóa tin nhắn đối với `{target}` tại máy chủ này.")
     else:
         await ctx.send(f"`{target}` hiện không nằm trong danh sách tự động xóa.")
@@ -215,7 +241,7 @@ async def listdelete(ctx):
             items.append(f"• {member.mention} (ID: `{user_id}`)" if member.bot else f"• {member.mention}")
             targets_for_buttons.append(("id", user_id, member.display_name))
         else:
-            items.append(f"• ID: `{user_id}`")
+            items.append(f"• ID: `{user_id}` (Ngoài server/Webhook)")
             targets_for_buttons.append(("id", user_id, str(user_id)))
             
     for name in names:
@@ -250,7 +276,7 @@ async def listdelete(ctx):
                     removed = True
                 
                 if removed:
-                    save_data(auto_delete_dict) # Cập nhật file
+                    save_data(auto_delete_dict)
                     await interaction.response.send_message(f"✅ Đã tắt tự động xóa tin nhắn đối với `{val}`.", ephemeral=False)
                     button.disabled = True
                     button.style = discord.ButtonStyle.secondary
@@ -263,7 +289,6 @@ async def listdelete(ctx):
     msg = f"📋 **Danh sách bị tự động xóa tại máy chủ này:**\n{list_str}\n\n*(Bấm vào các nút màu đỏ bên dưới để ngừng xóa ngay lập tức)*"
     await ctx.send(msg, view=view)
 
-# BÁO LỖI NẾU KHÔNG CÓ QUYỀN HOẶC GÕ THIẾU TÊN
 @autodelete.error
 @stopdelete.error
 async def command_permission_error(ctx, error):
@@ -278,7 +303,6 @@ async def command_permission_error(ctx, error):
             delete_after=10
         )
 
-# --- 4. KHỞI CHẠY BOT ---
 keep_alive()
 
 token = os.environ.get("BOT_TOKEN")
