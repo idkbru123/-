@@ -3,6 +3,7 @@ from discord.ext import commands
 from flask import Flask
 from threading import Thread
 import os
+import json
 from datetime import datetime, timedelta
 
 # --- 1. WEB SERVER ẢO GIỮ BOT ONLINE TRÊN RENDER ---
@@ -27,8 +28,24 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Lưu trữ độc lập theo Server: { guild_id: {"ids": [...], "names": [...]} }
-auto_delete_dict = {}
+# --- HỆ THỐNG LƯU TRỮ VÀO FILE JSON ĐỂ KHÔNG BỊ QUÊN ---
+DATA_FILE = "data.json"
+
+def load_data():
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
+
+def save_data(data):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4)
+
+# Load dữ liệu từ file (thay vì để trống như trước)
+auto_delete_dict = load_data()
 tag_spam_tracker = {}
 
 # HÀM KIỂM TRA QUYỀN CAO (STAFF / MOD / ADMIN)
@@ -42,19 +59,18 @@ def is_high_permission():
 
 @bot.event
 async def on_ready():
-    print(f'Bot {bot.user} đã Online!')
+    print(f'Bot {bot.user} đã Online và tải xong dữ liệu!')
 
 @bot.event
 async def on_message(message):
     if message.author == bot.user or not message.guild:
         return
 
-    guild_id = message.guild.id
-    server_data = auto_delete_dict.get(guild_id, {"ids": [], "names": []})
+    guild_id_str = str(message.guild.id)
+    server_data = auto_delete_dict.get(guild_id_str, {"ids": [], "names": []})
     blacklisted_ids = server_data["ids"]
     blacklisted_names = server_data["names"]
 
-    # KIỂM TRA XEM TIN NHẮN CÓ THUỘC DANH SÁCH BỊ XÓA KHÔNG
     is_blacklisted = False
     author_id = message.author.id
     author_name = message.author.name.lower()
@@ -65,12 +81,11 @@ async def on_message(message):
     elif author_name in blacklisted_names or display_name in blacklisted_names:
         is_blacklisted = True
 
-    # NẾU THUỘC DANH SÁCH ĐEN -> XỬ LÝ GHOST PING & XÓA TIN NHẮN
     if is_blacklisted:
         valid_mentions = [user for user in message.mentions if user != message.author]
         
         if valid_mentions:
-            tracker_key = (guild_id, author_id)
+            tracker_key = (guild_id_str, author_id)
             now = datetime.now()
             
             if tracker_key not in tag_spam_tracker:
@@ -116,6 +131,10 @@ async def on_message(message):
 @is_high_permission()
 async def autodelete(ctx, *, target: str):
     clean_target = target.strip("<@!>").strip()
+    guild_id_str = str(ctx.guild.id)
+
+    if guild_id_str not in auto_delete_dict:
+        auto_delete_dict[guild_id_str] = {"ids": [], "names": []}
 
     if clean_target.isdigit():
         target_id = int(clean_target)
@@ -126,31 +145,25 @@ async def autodelete(ctx, *, target: str):
         if target_id == bot.user.id:
             return await ctx.send("❌ Không thể bật tính năng tự động xóa tin nhắn cho Bot!")
 
-        display_str = f"Bot {member.mention} (ID: `{target_id}`)" if (member and member.bot) else (f"{member.mention}" if member else f"ID `{target_id}`")
+        display_str = f"Bot {member.mention}" if (member and member.bot) else (f"{member.mention}" if member else f"ID `{target_id}`")
 
-        guild_id = ctx.guild.id
-        if guild_id not in auto_delete_dict:
-            auto_delete_dict[guild_id] = {"ids": [], "names": []}
-
-        if target_id not in auto_delete_dict[guild_id]["ids"]:
-            auto_delete_dict[guild_id]["ids"].append(target_id)
+        if target_id not in auto_delete_dict[guild_id_str]["ids"]:
+            auto_delete_dict[guild_id_str]["ids"].append(target_id)
+            save_data(auto_delete_dict) # Lưu lại ngay lập tức
             await ctx.send(f"Đã bật tự động xóa tin nhắn của {display_str} tại máy chủ này.")
         else:
             await ctx.send(f"Bạn đã dùng lệnh này rồi và hiện tại đang tự động xóa tin nhắn của {display_str}.")
             
     else:
         target_name = target.lower()
-        if target_name in [ctx.author.name.lower(), ctx.author.display_name.lower()]:
+        if target_name in [ctx.author.name.lower(), getattr(ctx.author, 'display_name', '').lower()]:
             return await ctx.send("❌ Bạn không thể tự bật tính năng tự động xóa tin nhắn của chính mình!")
-        if target_name in [bot.user.name.lower(), bot.user.display_name.lower()]:
+        if target_name in [bot.user.name.lower(), getattr(bot.user, 'display_name', '').lower()]:
             return await ctx.send("❌ Không thể bật tính năng tự động xóa tin nhắn cho Bot!")
 
-        guild_id = ctx.guild.id
-        if guild_id not in auto_delete_dict:
-            auto_delete_dict[guild_id] = {"ids": [], "names": []}
-
-        if target_name not in auto_delete_dict[guild_id]["names"]:
-            auto_delete_dict[guild_id]["names"].append(target_name)
+        if target_name not in auto_delete_dict[guild_id_str]["names"]:
+            auto_delete_dict[guild_id_str]["names"].append(target_name)
+            save_data(auto_delete_dict) # Lưu lại ngay lập tức
             await ctx.send(f"Đã bật tự động xóa tin nhắn đối với TÊN/WEBHOOK `{target}` tại máy chủ này.")
         else:
             await ctx.send(f"Bạn đã dùng lệnh này rồi và hiện tại đang tự động xóa tin nhắn của TÊN/WEBHOOK `{target}`.")
@@ -158,37 +171,34 @@ async def autodelete(ctx, *, target: str):
 @bot.command(name="stopdelete")
 @is_high_permission()
 async def stopdelete(ctx, *, target: str):
-    guild_id = ctx.guild.id
-    server_data = auto_delete_dict.get(guild_id, {"ids": [], "names": []})
+    guild_id_str = str(ctx.guild.id)
+    server_data = auto_delete_dict.get(guild_id_str, {"ids": [], "names": []})
     clean_target = target.strip("<@!>").strip()
 
     removed = False
     if clean_target.isdigit():
         target_id = int(clean_target)
-        member = ctx.guild.get_member(target_id)
-        display_str = f"Bot {member.mention} (ID: `{target_id}`)" if (member and member.bot) else (f"{member.mention}" if member else f"ID `{target_id}`")
-
         if target_id in server_data["ids"]:
             server_data["ids"].remove(target_id)
             removed = True
-            await ctx.send(f"Đã tắt tự động xóa tin nhắn đối với {display_str} tại máy chủ này.")
-        else:
-            await ctx.send(f"{display_str} hiện không nằm trong danh sách tự động xóa của máy chủ này.")
     else:
         target_name = target.lower()
         if target_name in server_data["names"]:
             server_data["names"].remove(target_name)
             removed = True
-            await ctx.send(f"Đã tắt tự động xóa tin nhắn đối với TÊN/WEBHOOK `{target}` tại máy chủ này.")
-        else:
-            await ctx.send(f"`{target}` hiện không nằm trong danh sách tự động xóa của máy chủ này.")
+
+    if removed:
+        save_data(auto_delete_dict) # Cập nhật file sau khi xóa
+        await ctx.send(f"✅ Đã tắt tự động xóa tin nhắn đối với `{target}` tại máy chủ này.")
+    else:
+        await ctx.send(f"`{target}` hiện không nằm trong danh sách tự động xóa.")
 
 # --- LỆNH LIST KÈM NÚT BẤM (BUTTONS) ---
 @bot.command(name="listdelete")
 @is_high_permission()
 async def listdelete(ctx):
-    guild_id = ctx.guild.id
-    server_data = auto_delete_dict.get(guild_id, {"ids": [], "names": []})
+    guild_id_str = str(ctx.guild.id)
+    server_data = auto_delete_dict.get(guild_id_str, {"ids": [], "names": []})
 
     ids = server_data.get("ids", [])
     names = server_data.get("names", [])
@@ -214,23 +224,22 @@ async def listdelete(ctx):
     
     list_str = "\n".join(items)
 
-    # Class tạo Nút bấm tương tác
     class StopDeleteView(discord.ui.View):
         def __init__(self):
-            super().__init__(timeout=300) # Nút bấm có hiệu lực trong 5 phút
-            for t_type, val, label in targets_for_buttons[:25]: # Discord giới hạn tối đa 25 nút 1 tin nhắn
+            super().__init__(timeout=300)
+            for t_type, val, label in targets_for_buttons[:25]:
                 btn = discord.ui.Button(style=discord.ButtonStyle.danger, label=f"❌ Tắt {label}"[:80])
                 btn.callback = self.create_callback(btn, t_type, val)
                 self.add_item(btn)
 
         def create_callback(self, button, t_type, val):
             async def callback(interaction: discord.Interaction):
-                # Kiểm tra quyền người ấn nút
                 p = interaction.user.guild_permissions
                 if not (p.administrator or p.manage_messages or p.kick_members or p.ban_members or p.manage_guild):
                     return await interaction.response.send_message("❌ Mày đâu có quyền Quản trị / Staff mà bấm nút này!", ephemeral=True)
 
-                current_server_data = auto_delete_dict.get(interaction.guild.id, {"ids": [], "names": []})
+                guild_id_cb = str(interaction.guild.id)
+                current_server_data = auto_delete_dict.get(guild_id_cb, {"ids": [], "names": []})
                 
                 removed = False
                 if t_type == "id" and val in current_server_data["ids"]:
@@ -241,8 +250,8 @@ async def listdelete(ctx):
                     removed = True
                 
                 if removed:
+                    save_data(auto_delete_dict) # Cập nhật file
                     await interaction.response.send_message(f"✅ Đã tắt tự động xóa tin nhắn đối với `{val}`.", ephemeral=False)
-                    # Sau khi tắt thành công, làm xám nút bấm đi
                     button.disabled = True
                     button.style = discord.ButtonStyle.secondary
                     await interaction.message.edit(view=self)
