@@ -27,9 +27,17 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 auto_delete_list = []
-
-# Bộ đếm spam tag: {user_id: {"count": số_lần, "last_time": thời_gian_gần_nhất}}
 tag_spam_tracker = {}
+
+# HÀM KIỂM TRA QUYỀN CAO (STAFF / MOD / ADMIN)
+def is_high_permission():
+    async def predicate(ctx):
+        p = ctx.author.guild_permissions
+        # Cho phép nếu có bất kỳ quyền cao nào dưới đây:
+        if p.administrator or p.manage_messages or p.kick_members or p.ban_members or p.manage_guild:
+            return True
+        raise commands.CheckFailure("Lỗi thiếu quyền")
+    return commands.check(predicate)
 
 @bot.event
 async def on_ready():
@@ -40,20 +48,17 @@ async def on_message(message):
     if message.author == bot.user or message.author.bot:
         return
 
-    # Kiểm tra nếu người gửi nằm trong danh sách đen
+    # Tự động xóa & chống Ghost Ping / Spam Tag đối với người trong danh sách đen
     if message.author.id in auto_delete_list:
-        # Lọc danh sách tag hợp lệ (không tính tự tag chính mình)
         valid_mentions = [user for user in message.mentions if user != message.author]
         
         if valid_mentions:
             user_id = message.author.id
             now = datetime.now()
             
-            # Khởi tạo hoặc cập nhật bộ đếm spam
             if user_id not in tag_spam_tracker:
                 tag_spam_tracker[user_id] = {"count": 1, "last_time": now}
             else:
-                # Nếu lần tag trước cách xa quá 60 giây -> Reset đếm lại từ 1
                 if (now - tag_spam_tracker[user_id]["last_time"]).total_seconds() > 60:
                     tag_spam_tracker[user_id] = {"count": 1, "last_time": now}
                 else:
@@ -62,10 +67,9 @@ async def on_message(message):
 
             current_count = tag_spam_tracker[user_id]["count"]
 
-            # XỬ LÝ KHI SPAM TAG QUÁ 5 LẦN -> MUTE 1 PHÚT
+            # MUTE 1 PHÚT NẾU SPAM TAG QUÁ 5 LẦN
             if current_count >= 5:
                 try:
-                    # Timeout (Mute) người dùng trong 1 phút
                     await message.author.timeout(timedelta(minutes=1), reason="Spam tag quá 5 lần trong danh sách đen")
                     await message.channel.send(
                         f"🚫 {message.author.mention} đã bị **MUTE 1 phút** do cố tình spam tag quá 5 lần!",
@@ -76,17 +80,15 @@ async def on_message(message):
                         f"⚠️ Bot không thể Mute {message.author.mention} (Thiếu quyền 'Moderate Members' hoặc Role của bot thấp hơn người này).",
                         delete_after=15
                     )
-                # Reset bộ đếm về 0 sau khi thi hành phạt
                 tag_spam_tracker[user_id] = {"count": 0, "last_time": now}
             else:
-                # Cảnh báo Ghost Ping bình thường + hiển thị số lần cảnh báo
                 pinged_users = ", ".join([user.mention for user in valid_mentions])
                 await message.channel.send(
                     f"⚠️ **Ghost Ping!** {message.author.mention} vừa tag {pinged_users} ({current_count}/5 lần - Tag 5 lần sẽ bị MUTE 1 phút).",
                     delete_after=10
                 )
 
-        # Xóa tin nhắn vi phạm
+        # Xóa tin nhắn
         try:
             await message.delete()
         except discord.Forbidden:
@@ -94,9 +96,10 @@ async def on_message(message):
             
     await bot.process_commands(message)
 
-# --- 3. LỆNH ĐIỀU KHIỂN ---
+# --- 3. LỆNH ĐIỀU KHIỂN (YÊU CẦU QUYỀN CAO) ---
+
 @bot.command(name="autodelete")
-@commands.has_permissions(manage_messages=True)
+@is_high_permission()
 async def autodelete(ctx, member: discord.Member):
     if member.id not in auto_delete_list:
         auto_delete_list.append(member.id)
@@ -105,7 +108,7 @@ async def autodelete(ctx, member: discord.Member):
         await ctx.send(f"{member.mention} đã nằm trong danh sách đen từ trước.")
 
 @bot.command(name="stopdelete")
-@commands.has_permissions(manage_messages=True)
+@is_high_permission()
 async def stopdelete(ctx, member: discord.Member):
     if member.id in auto_delete_list:
         auto_delete_list.remove(member.id)
@@ -114,6 +117,21 @@ async def stopdelete(ctx, member: discord.Member):
         await ctx.send(f"Đã tắt tự động xóa tin nhắn đối với {member.mention}.")
     else:
         await ctx.send(f"{member.mention} không nằm trong danh sách đen.")
+
+# BÁO LỖI NẾU NGƯỜI DÙNG KHÔNG CÓ QUYỀN HOẶC GÕ THIẾU TÊN
+@autodelete.error
+@stopdelete.error
+async def command_permission_error(ctx, error):
+    if isinstance(error, commands.CheckFailure):
+        await ctx.send(
+            f"❌ {ctx.author.mention}, m có quyền cao del đâu mà sài",
+            delete_after=10
+        )
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send(
+            f"⚠️ Vui lòng tag tên người dùng! Cú pháp: `{ctx.prefix}{ctx.command.name} @nguoidung`",
+            delete_after=10
+        )
 
 # --- 4. KHỞI CHẠY BOT ---
 keep_alive()
