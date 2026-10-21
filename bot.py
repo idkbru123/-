@@ -19,7 +19,7 @@ def keep_alive():
     t = Thread(target=run)
     t.start()
 
-# --- 2. CẤU HÌNH VÀ TÍNH NĂNG BOT DISCORD ---
+# --- 2. CẤU HÌNH VÀ TÍNH NĂNG BOT DISCORD (LỆNH TIỀN TỐ !) ---
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -37,16 +37,19 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
-    # Tự động xóa tin nhắn nếu người gửi nằm trong danh sách
+    # Tự động xóa tin nhắn nếu người gửi nằm trong danh sách đen
     if message.author.id in auto_delete_list:
         try:
             await message.delete()
         except discord.Forbidden:
             pass
             
+    # Xử lý các lệnh !autodelete / !stopdelete
     await bot.process_commands(message)
 
-@bot.command()
+# --- KHAI BÁO CÁC LỆNH TIỀN TỐ (!) ---
+
+@bot.command(name="autodelete")
 @commands.has_permissions(manage_messages=True)
 async def autodelete(ctx, member: discord.Member):
     if member.id not in auto_delete_list:
@@ -55,7 +58,7 @@ async def autodelete(ctx, member: discord.Member):
     else:
         await ctx.send(f"{member.mention} đã nằm trong danh sách đen từ trước.")
 
-@bot.command()
+@bot.command(name="stopdelete")
 @commands.has_permissions(manage_messages=True)
 async def stopdelete(ctx, member: discord.Member):
     if member.id in auto_delete_list:
@@ -64,10 +67,18 @@ async def stopdelete(ctx, member: discord.Member):
     else:
         await ctx.send(f"{member.mention} không nằm trong danh sách đen.")
 
+# Báo lỗi nếu thiếu quyền hoặc quên tag người dùng
+@autodelete.error
+@stopdelete.error
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("Bạn cần có quyền 'Quản lý tin nhắn' (Manage Messages) để dùng lệnh này!")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("Vui lòng tag người dùng cần xử lý (Ví dụ: `!autodelete @nguoidung`).")
+
 # --- 3. KHỞI CHẠY BOT ---
 keep_alive()
 
-# Lấy Token an toàn từ biến môi trường "BOT_TOKEN" đã cài trên Render
 token = os.environ.get("BOT_TOKEN")
 if token:
     bot.run(token)
