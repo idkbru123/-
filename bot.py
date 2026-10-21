@@ -26,7 +26,9 @@ intents.message_content = True
 intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
-auto_delete_list = []
+
+# Lưu trữ độc lập theo từng Server: { guild_id: [user_id1, user_id2] }
+auto_delete_dict = {}
 tag_spam_tracker = {}
 
 # HÀM KIỂM TRA QUYỀN CAO (STAFF / MOD / ADMIN)
@@ -44,27 +46,30 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    if message.author == bot.user or message.author.bot:
+    if message.author == bot.user or message.author.bot or not message.guild:
         return
 
-    # Tự động xóa & chống Ghost Ping / Spam Tag đối với người trong danh sách đen
-    if message.author.id in auto_delete_list:
+    guild_id = message.guild.id
+    server_blacklist = auto_delete_dict.get(guild_id, [])
+
+    # Tự động xóa & chống Ghost Ping chỉ áp dụng TRONG SERVER NÀY
+    if message.author.id in server_blacklist:
         valid_mentions = [user for user in message.mentions if user != message.author]
         
         if valid_mentions:
-            user_id = message.author.id
+            tracker_key = (guild_id, message.author.id)
             now = datetime.now()
             
-            if user_id not in tag_spam_tracker:
-                tag_spam_tracker[user_id] = {"count": 1, "last_time": now}
+            if tracker_key not in tag_spam_tracker:
+                tag_spam_tracker[tracker_key] = {"count": 1, "last_time": now}
             else:
-                if (now - tag_spam_tracker[user_id]["last_time"]).total_seconds() > 60:
-                    tag_spam_tracker[user_id] = {"count": 1, "last_time": now}
+                if (now - tag_spam_tracker[tracker_key]["last_time"]).total_seconds() > 60:
+                    tag_spam_tracker[tracker_key] = {"count": 1, "last_time": now}
                 else:
-                    tag_spam_tracker[user_id]["count"] += 1
-                    tag_spam_tracker[user_id]["last_time"] = now
+                    tag_spam_tracker[tracker_key]["count"] += 1
+                    tag_spam_tracker[tracker_key]["last_time"] = now
 
-            current_count = tag_spam_tracker[user_id]["count"]
+            current_count = tag_spam_tracker[tracker_key]["count"]
 
             # MUTE 1 PHÚT NẾU SPAM TAG QUÁ 5 LẦN
             if current_count >= 5:
@@ -79,7 +84,7 @@ async def on_message(message):
                         f"⚠️ Bot không thể Mute {message.author.mention} (Thiếu quyền 'Moderate Members' hoặc Role của bot thấp hơn người này).",
                         delete_after=15
                     )
-                tag_spam_tracker[user_id] = {"count": 0, "last_time": now}
+                tag_spam_tracker[tracker_key] = {"count": 0, "last_time": now}
             else:
                 pinged_users = ", ".join([user.mention for user in valid_mentions])
                 await message.channel.send(
@@ -95,41 +100,50 @@ async def on_message(message):
             
     await bot.process_commands(message)
 
-# --- 3. LỆNH ĐIỀU KHIỂN (YÊU CẦU QUYỀN CAO) ---
+# --- 3. LỆNH ĐIỀU KHIỂN (RIÊNG CHO TỪNG SERVER) ---
 
 @bot.command(name="autodelete")
 @is_high_permission()
 async def autodelete(ctx, member: discord.Member):
-    if member.id not in auto_delete_list:
-        auto_delete_list.append(member.id)
-        await ctx.send(f"Đã bật TỰ ĐỘNG XÓA tin nhắn của {member.mention}.")
+    guild_id = ctx.guild.id
+    if guild_id not in auto_delete_dict:
+        auto_delete_dict[guild_id] = []
+
+    if member.id not in auto_delete_dict[guild_id]:
+        auto_delete_dict[guild_id].append(member.id)
+        await ctx.send(f"Đã bật TỰ ĐỘNG XÓA tin nhắn của {member.mention} tại máy chủ này.")
     else:
-        # Thông báo nhắc nhở khi đã bật từ trước
-        await ctx.send(f"Bạn đã dùng lệnh này rồi và hiện tại đang tự động xóa tin nhắn của {member.mention}.")
+        await ctx.send(f"Bạn đã dùng lệnh này rồi và hiện tại đang tự động xóa tin nhắn của {member.mention} tại máy chủ này.")
 
 @bot.command(name="stopdelete")
 @is_high_permission()
 async def stopdelete(ctx, member: discord.Member):
-    if member.id in auto_delete_list:
-        auto_delete_list.remove(member.id)
-        if member.id in tag_spam_tracker:
-            del tag_spam_tracker[member.id]
-        await ctx.send(f"Đã tắt tự động xóa tin nhắn đối với {member.mention}.")
-    else:
-        await ctx.send(f"{member.mention} hiện không nằm trong danh sách tự động xóa.")
+    guild_id = ctx.guild.id
+    server_blacklist = auto_delete_dict.get(guild_id, [])
 
-# LỆNH XEM DANH SÁCH NHỮNG NGƯỜI ĐANG BỊ TỰ ĐỘNG XÓA TIN NHẮN
+    if member.id in server_blacklist:
+        server_blacklist.remove(member.id)
+        tracker_key = (guild_id, member.id)
+        if tracker_key in tag_spam_tracker:
+            del tag_spam_tracker[tracker_key]
+        await ctx.send(f"Đã tắt tự động xóa tin nhắn đối với {member.mention} tại máy chủ này.")
+    else:
+        await ctx.send(f"{member.mention} hiện không nằm trong danh sách tự động xóa của máy chủ này.")
+
 @bot.command(name="listdelete")
 @is_high_permission()
 async def listdelete(ctx):
-    if not auto_delete_list:
-        await ctx.send("Hiện tại không có ai trong danh sách tự động xóa tin nhắn.")
-    else:
-        members_mentions = [f"<@{user_id}>" for user_id in auto_delete_list]
-        list_str = ", ".join(members_mentions)
-        await ctx.send(f"📋 **Danh sách đang bị tự động xóa tin nhắn:** {list_str}")
+    guild_id = ctx.guild.id
+    server_blacklist = auto_delete_dict.get(guild_id, [])
 
-# BÁO LỖI NẾU NGƯỜI DÙNG KHÔNG CÓ QUYỀN HOẶC GÕ THIẾU TÊN
+    if not server_blacklist:
+        await ctx.send("Hiện tại máy chủ này không có ai trong danh sách tự động xóa tin nhắn.")
+    else:
+        members_mentions = [f"<@{user_id}>" for user_id in server_blacklist]
+        list_str = ", ".join(members_mentions)
+        await ctx.send(f"📋 **Danh sách bị tự động xóa tại máy chủ này:** {list_str}")
+
+# BÁO LỖI NẾU KHÔNG CÓ QUYỀN HOẶC GÕ THIẾU TÊN
 @autodelete.error
 @stopdelete.error
 async def command_permission_error(ctx, error):
