@@ -6,6 +6,7 @@ import os
 import json
 import re
 import requests
+import asyncio
 from datetime import datetime, timedelta
 
 # --- 1. WEB SERVER ẢO GIỮ BOT ONLINE TRÊN RENDER ---
@@ -79,6 +80,30 @@ tag_spam_tracker = {}
 msg_spam_tracker = {} 
 slow_spam_tracker = {} 
 
+# --- HÀM XÓA TIN NHẮN AN TOÀN (CHỐNG 404 / 429) ---
+async def safe_delete(message, retry_on_ratelimit=True):
+    """Xóa 1 tin nhắn an toàn: bỏ qua nếu tin đã mất (404) hoặc thiếu quyền (403),
+    và tự chờ + thử lại đúng 1 lần nếu bị rate limit (429)."""
+    try:
+        await message.delete()
+        return True
+    except discord.NotFound:
+        # Tin đã bị xóa từ trước (do purge khác chẳng hạn) -> bỏ qua
+        return True
+    except discord.Forbidden:
+        # Bot không có quyền xóa -> bỏ qua
+        return False
+    except discord.HTTPException as e:
+        if e.status == 429 and retry_on_ratelimit:
+            retry_after = getattr(e, "retry_after", 1) or 1
+            await asyncio.sleep(retry_after)
+            try:
+                await message.delete()
+                return True
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                return False
+        return False
+
 # HÀM KIỂM TRA QUYỀN CAO
 def is_high_permission():
     async def predicate(ctx):
@@ -140,6 +165,8 @@ def get_setting_embed(guild_id_str):
     log_ch_id = settings.get("log_channel")
     log_display = f"<#{log_ch_id}>" if log_ch_id else "❌ Chưa cài đặt"
     
+    fake_bot_status = "🟢 ĐANG BẬT" if settings.get("block_fake_bot", False) else "🔴 ĐANG TẮT"
+    
     embed = discord.Embed(title="⚙️ BẢNG ĐIỀU KHIỂN CHỐNG SPAM", color=discord.Color.blue())
     embed.set_image(url="https://cdn.discordapp.com/attachments/1344684960878952590/1562683883575845004/attachment.gif")
     embed.add_field(
@@ -158,7 +185,12 @@ def get_setting_embed(guild_id_str):
         inline=False
     )
     embed.add_field(
-        name="4. Nhật ký Vệ sĩ (Mod Logs)", 
+        name="4. Chặn Bot/Webhook Ma (!blockfakebot)", 
+        value=f"• Trạng thái: **{fake_bot_status}**\n• Diệt ngay lập tức Bot/Webhook giả mạo không nằm trong danh sách thành viên Server, block thẳng vào danh sách đen.", 
+        inline=False
+    )
+    embed.add_field(
+        name="5. Nhật ký Vệ sĩ (Mod Logs)", 
         value=f"• Kênh xuất Log: **{log_display}**\n👉 Dùng lệnh: `!setlogg #kenh` để cài đặt.", 
         inline=False
     )
@@ -257,6 +289,15 @@ class SettingView(discord.ui.View):
     async def edit_log(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message("👉 Vui lòng ra ngoài kênh chat và gõ lệnh:\n`!setlogg #tên-kênh` để cài đặt\nHoặc gõ `!setlogg` để tắt.", ephemeral=True)
 
+    @discord.ui.button(label="Chặn Bot/Webhook Ma", style=discord.ButtonStyle.success, emoji="👻")
+    async def toggle_fake_bot(self, interaction: discord.Interaction, button: discord.ui.Button):
+        current_status = auto_delete_dict[self.guild_id_str]["settings"].get("block_fake_bot", False)
+        auto_delete_dict[self.guild_id_str]["settings"]["block_fake_bot"] = not current_status
+        save_data(auto_delete_dict)
+
+        button.style = discord.ButtonStyle.danger if current_status else discord.ButtonStyle.success
+        await interaction.response.edit_message(embed=get_setting_embed(self.guild_id_str), view=self)
+
 @bot.event
 async def on_ready():
     print(f'Bot {bot.user} đã Online và tải xong dữ liệu!')
@@ -269,9 +310,9 @@ async def on_message(message):
     guild_id_str = str(message.guild.id)
     
     if guild_id_str not in auto_delete_dict:
-        auto_delete_dict[guild_id_str] = {"ids": [], "names": [], "settings": {"tag_limit": 5, "warn_limit": 5, "msg_limit": 10, "mute_time": "1p", "anti_spam": False, "log_channel": None}}
+        auto_delete_dict[guild_id_str] = {"ids": [], "names": [], "settings": {"tag_limit": 5, "warn_limit": 5, "msg_limit": 10, "mute_time": "1p", "anti_spam": False, "log_channel": None, "block_fake_bot": False}}
     elif "settings" not in auto_delete_dict[guild_id_str]:
-        auto_delete_dict[guild_id_str]["settings"] = {"tag_limit": 5, "warn_limit": 5, "msg_limit": 10, "mute_time": "1p", "anti_spam": False, "log_channel": None}
+        auto_delete_dict[guild_id_str]["settings"] = {"tag_limit": 5, "warn_limit": 5, "msg_limit": 10, "mute_time": "1p", "anti_spam": False, "log_channel": None, "block_fake_bot": False}
     else:
         if "warn_limit" not in auto_delete_dict[guild_id_str]["settings"]:
             auto_delete_dict[guild_id_str]["settings"]["warn_limit"] = 5
@@ -279,6 +320,8 @@ async def on_message(message):
             auto_delete_dict[guild_id_str]["settings"]["msg_limit"] = auto_delete_dict[guild_id_str]["settings"]["warn_limit"] + 5
         if "log_channel" not in auto_delete_dict[guild_id_str]["settings"]:
             auto_delete_dict[guild_id_str]["settings"]["log_channel"] = None
+        if "block_fake_bot" not in auto_delete_dict[guild_id_str]["settings"]:
+            auto_delete_dict[guild_id_str]["settings"]["block_fake_bot"] = False
 
     server_data = auto_delete_dict[guild_id_str]
     server_settings = server_data["settings"]
@@ -288,11 +331,47 @@ async def on_message(message):
     mute_seconds = parse_time_to_seconds(mute_time_raw)
     if mute_seconds <= 0: mute_seconds = 60
 
-    is_staff_or_bot = message.author.bot
-    if isinstance(message.author, discord.Member):
-        p = message.author.guild_permissions
-        if p.administrator or p.manage_messages or p.manage_guild or p.kick_members or p.ban_members:
-            is_staff_or_bot = True
+    # 0. HỆ THỐNG TIÊU DIỆT BOT/WEBHOOK MA (CHẠY NGAY LẬP TỨC TỪ TIN NHẮN #1)
+    if server_settings.get("block_fake_bot", False):
+        # Kiểm tra nếu dấu hiệu người gửi là Bot hoặc Webhook
+        if message.author.bot or message.webhook_id:
+            # Nếu người gửi KHÔNG PHẢI là một thành viên hợp lệ trong server (discord.Member) hoặc là Webhook
+            if not isinstance(message.author, discord.Member) or message.webhook_id:
+                
+                await safe_delete(message) # Xóa không thương tiếc ngay từ tin nhắn đầu tiên
+                
+                target_name = message.author.name.lower()
+                
+                # Cập nhật danh sách đen
+                if target_name not in auto_delete_dict[guild_id_str]["names"]:
+                    auto_delete_dict[guild_id_str]["names"].append(target_name)
+                    save_data(auto_delete_dict)
+
+                    try:
+                        await message.channel.send(
+                            f"🛡️ **Anti-Nuke:** Đã tiêu diệt và Block Bot/Webhook ma (`{message.author.name}`) ngay từ tin nhắn đầu tiên!",
+                            delete_after=15
+                        )
+                    except discord.HTTPException:
+                        pass
+
+                    await send_mod_log(
+                        message.guild,
+                        "💀 Tiêu Diệt Bot/Webhook Ma (Tức Thì)",
+                        f"**Đối tượng:** `{message.author.name}`\n**Hành động:** Xóa lập tức & Block vĩnh viễn\n**Lý do:** Kẻ gửi không phải là thành viên hợp lệ (hoặc là Webhook).",
+                        discord.Color.brand_red()
+                    )
+                return # CHẶN ĐỨNG TẠI ĐÂY! Không cho code chạy tiếp xuống bộ đếm 5 tin nhắn.
+
+    # KIỂM TRA QUYỀN (LOẠI TRỪ WEBHOOK/BOT MA KHỎI QUYỀN STAFF)
+    is_staff_or_bot = False
+    if isinstance(message.author, discord.Member) and not message.webhook_id:
+        if message.author.bot:
+            is_staff_or_bot = True # Đây là Bot chính thức hợp lệ của server
+        else:
+            p = message.author.guild_permissions
+            if p.administrator or p.manage_messages or p.manage_guild or p.kick_members or p.ban_members:
+                is_staff_or_bot = True # Đây là Staff/Admin
 
     # 1. HỆ THỐNG CHỐNG SPAM TOÀN DIỆN
     if server_settings.get("anti_spam", False):
@@ -319,10 +398,7 @@ async def on_message(message):
 
         elif current_msg_count >= msg_limit:
             if is_staff_or_bot:
-                try:
-                    await message.delete()
-                except discord.Forbidden:
-                    pass
+                await safe_delete(message)
             else:
                 if isinstance(message.author, discord.Member) and not message.webhook_id:
                     try:
@@ -338,7 +414,7 @@ async def on_message(message):
                         save_data(auto_delete_dict)
                         try:
                             await message.channel.purge(limit=msg_limit + 5, check=lambda m: m.author.id == author_id or (m.webhook_id and m.webhook_id == message.webhook_id))
-                        except discord.Forbidden:
+                        except (discord.Forbidden, discord.HTTPException):
                             pass
                         await message.channel.send(f"🛡️ **Anti-Nuke:** Phát hiện Webhook lạ (`{message.author.name}`) đang spam phá hoại! Đã khóa vào Danh Sách Đen.", delete_after=15)
                         await send_mod_log(message.guild, "💀 Tiêu Diệt Nuke Bot/Webhook", f"**Đối tượng:** `{target_name}`\n**Hành động:** Quét sạch chat & Block Vĩnh viễn\n**Lý do:** Xả spam tốc độ cao", discord.Color.brand_red())
@@ -353,10 +429,7 @@ async def on_message(message):
                     tracker["count"] += 1
                     
                     if tracker["count"] >= 5:
-                        try:
-                            await message.delete() 
-                        except discord.Forbidden:
-                            pass
+                        await safe_delete(message)
                         
                         if not is_staff_or_bot:
                             if tracker["first_duplicate_time"] is None:
@@ -436,14 +509,15 @@ async def on_message(message):
             else:
                 pinged_users = ", ".join([user.mention for user in valid_mentions])
                 sender_display = message.author.mention if hasattr(message.author, 'mention') else f"**{message.author.name}**"
-                await message.channel.send(
-                    f"⚠️ **Ghost Ping!** {sender_display} vừa tag {pinged_users} ({current_count}/{tag_limit} lần).",
-                    delete_after=10
-                )
-        try:
-            await message.delete()
-        except discord.Forbidden:
-            pass
+                try:
+                    await message.channel.send(
+                        f"⚠️ **Ghost Ping!** {sender_display} vừa tag {pinged_users} ({current_count}/{tag_limit} lần).",
+                        delete_after=10
+                    )
+                except discord.HTTPException:
+                    pass
+        # Xóa tin nhắn an toàn: không còn bị crash vì 404 (tin đã mất) hay 429 (rate limit)
+        await safe_delete(message)
             
     await bot.process_commands(message)
 
@@ -492,7 +566,7 @@ async def cmdhelp(ctx):
 async def setlogg(ctx, channel: discord.TextChannel = None):
     guild_id_str = str(ctx.guild.id)
     if guild_id_str not in auto_delete_dict:
-        auto_delete_dict[guild_id_str] = {"ids": [], "names": [], "settings": {"tag_limit": 5, "warn_limit": 5, "msg_limit": 10, "mute_time": "1p", "anti_spam": False, "log_channel": None}}
+        auto_delete_dict[guild_id_str] = {"ids": [], "names": [], "settings": {"tag_limit": 5, "warn_limit": 5, "msg_limit": 10, "mute_time": "1p", "anti_spam": False, "log_channel": None, "block_fake_bot": False}}
         
     if channel:
         auto_delete_dict[guild_id_str]["settings"]["log_channel"] = channel.id
@@ -531,7 +605,7 @@ async def lockdown(ctx):
 async def setting(ctx):
     guild_id_str = str(ctx.guild.id)
     if guild_id_str not in auto_delete_dict:
-        auto_delete_dict[guild_id_str] = {"ids": [], "names": [], "settings": {"tag_limit": 5, "warn_limit": 5, "msg_limit": 10, "mute_time": "1p", "anti_spam": False, "log_channel": None}}
+        auto_delete_dict[guild_id_str] = {"ids": [], "names": [], "settings": {"tag_limit": 5, "warn_limit": 5, "msg_limit": 10, "mute_time": "1p", "anti_spam": False, "log_channel": None, "block_fake_bot": False}}
     
     embed = get_setting_embed(guild_id_str)
     view = SettingView(guild_id_str, ctx.author)
@@ -542,7 +616,7 @@ async def setting(ctx):
 async def nospam(ctx):
     guild_id_str = str(ctx.guild.id)
     if guild_id_str not in auto_delete_dict:
-        auto_delete_dict[guild_id_str] = {"ids": [], "names": [], "settings": {"tag_limit": 5, "warn_limit": 5, "msg_limit": 10, "mute_time": "1p", "anti_spam": False, "log_channel": None}}
+        auto_delete_dict[guild_id_str] = {"ids": [], "names": [], "settings": {"tag_limit": 5, "warn_limit": 5, "msg_limit": 10, "mute_time": "1p", "anti_spam": False, "log_channel": None, "block_fake_bot": False}}
     
     current_status = auto_delete_dict[guild_id_str]["settings"].get("anti_spam", False)
     auto_delete_dict[guild_id_str]["settings"]["anti_spam"] = not current_status
@@ -556,13 +630,29 @@ async def nospam(ctx):
     else:
         await ctx.send("✅ Đã **TẮT 🔴** chế độ chống Spam.")
 
+@bot.command(name="blockfakebot")
+@is_high_permission()
+async def blockfakebot(ctx):
+    guild_id_str = str(ctx.guild.id)
+    if guild_id_str not in auto_delete_dict:
+        auto_delete_dict[guild_id_str] = {"ids": [], "names": [], "settings": {"tag_limit": 5, "warn_limit": 5, "msg_limit": 10, "mute_time": "1p", "anti_spam": False, "log_channel": None, "block_fake_bot": False}}
+
+    current_status = auto_delete_dict[guild_id_str]["settings"].get("block_fake_bot", False)
+    auto_delete_dict[guild_id_str]["settings"]["block_fake_bot"] = not current_status
+    save_data(auto_delete_dict)
+
+    if not current_status:
+        await ctx.send("✅ Đã **BẬT 🟢** chặn Bot/Webhook ma.\n*(Mọi tin nhắn từ bot/webhook không thực sự là thành viên server sẽ bị xóa ngay lập tức, không cần đợi spam.)*")
+    else:
+        await ctx.send("✅ Đã **TẮT 🔴** chặn Bot/Webhook ma.")
+
 @bot.command(name="autodelete")
 @is_high_permission()
 async def autodelete(ctx, *, target: str):
     clean_target = target.strip("<@!>").strip()
     guild_id_str = str(ctx.guild.id)
     if guild_id_str not in auto_delete_dict:
-        auto_delete_dict[guild_id_str] = {"ids": [], "names": [], "settings": {"tag_limit": 5, "warn_limit": 5, "msg_limit": 10, "mute_time": "1p", "anti_spam": False, "log_channel": None}}
+        auto_delete_dict[guild_id_str] = {"ids": [], "names": [], "settings": {"tag_limit": 5, "warn_limit": 5, "msg_limit": 10, "mute_time": "1p", "anti_spam": False, "log_channel": None, "block_fake_bot": False}}
 
     if clean_target.isdigit():
         target_id = int(clean_target)
