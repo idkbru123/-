@@ -7,6 +7,8 @@ import json
 import re
 import requests
 import asyncio
+import time
+import psutil
 from datetime import datetime, timedelta
 import io
 
@@ -29,8 +31,10 @@ def keep_alive():
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+start_time = time.time() # Lưu thời gian bắt đầu chạy bot để tính Uptime
 
 # --- HỆ THỐNG LƯU TRỮ VĨNH VIỄN QUA UPSTASH REDIS ---
 UPSTASH_URL = os.environ.get("UPSTASH_REDIS_REST_URL")
@@ -80,6 +84,7 @@ auto_delete_dict = load_data()
 tag_spam_tracker = {}
 msg_spam_tracker = {} 
 slow_spam_tracker = {} 
+blocked_spam_count = 0 # Đếm tổng số spam đã chặn
 
 # --- HÀM XÓA TIN NHẮN AN TOÀN (CHỐNG 404 / 429) ---
 async def safe_delete(message, retry_on_ratelimit=True):
@@ -116,33 +121,33 @@ def is_high_permission():
 def parse_time_to_seconds(time_str):
     if isinstance(time_str, int):
         return time_str * 60
-    
+
     time_str = str(time_str).lower().replace(" ", "")
     if time_str.isdigit():
         return int(time_str) * 60 
-        
+
     time_str = time_str.replace("phút", "p").replace("phut", "p")
     time_str = time_str.replace("giây", "s").replace("giay", "s")
     time_str = time_str.replace("giờ", "h").replace("gio", "h")
-    
+
     total_seconds = 0
     matches = re.findall(r'(\d+)([hpmsc])', time_str)
     if not matches:
         return -1
-        
+
     for val, unit in matches:
         val = int(val)
         if unit == 'h': total_seconds += val * 3600
         elif unit in ['p', 'm']: total_seconds += val * 60
         elif unit in ['s', 'c']: total_seconds += val
-        
+
     return total_seconds
 
 # HÀM GỬI NHẬT KÝ (MOD LOGS)
 async def send_mod_log(guild, title, description, color=discord.Color.red()):
     guild_id_str = str(guild.id)
     log_channel_id = auto_delete_dict.get(guild_id_str, {}).get("settings", {}).get("log_channel")
-    
+
     if log_channel_id:
         channel = guild.get_channel(log_channel_id)
         if channel:
@@ -166,19 +171,26 @@ def serialize_overwrites(channel):
             })
     return overwrites_data
 
+# TỰ ĐỘNG XÓA LỆNH BOT
+@bot.before_invoke
+async def delete_command_message(ctx):
+    # Xóa tin nhắn chứa lệnh của người dùng sau khi lệnh bắt đầu chạy
+    if ctx.message:
+        await safe_delete(ctx.message, retry_on_ratelimit=False)
+
 # --- HÀM TẠO GIAO DIỆN EMBED CHO SETTING ---
 def get_setting_embed(guild_id_str):
     settings = auto_delete_dict[guild_id_str]["settings"]
     status = "🟢 ĐANG BẬT" if settings.get("anti_spam", False) else "🔴 ĐANG TẮT"
-    
+
     mute_display = settings.get('mute_time', '1p')
     if isinstance(mute_display, int): mute_display = f"{mute_display} phút"
-    
+
     log_ch_id = settings.get("log_channel")
     log_display = f"<#{log_ch_id}>" if log_ch_id else "❌ Chưa cài đặt"
-    
+
     fake_bot_status = "🟢 ĐANG BẬT" if settings.get("block_fake_bot", False) else "🔴 ĐANG TẮT"
-    
+
     embed = discord.Embed(title="⚙️ BẢNG ĐIỀU KHIỂN CHỐNG SPAM", color=discord.Color.blue())
     embed.set_image(url="https://cdn.discordapp.com/attachments/1344684960878952590/1562683883575845004/attachment.gif")
     embed.add_field(
@@ -215,7 +227,7 @@ class SettingModal(discord.ui.Modal):
         super().__init__(title=title_text)
         self.setting_key = setting_key
         self.view_instance = view_instance
-        
+
         self.value_input = discord.ui.TextInput(
             label="Nhập thông số mới:",
             style=discord.TextStyle.short,
@@ -227,7 +239,7 @@ class SettingModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         val = self.value_input.value
         guild_id_str = str(interaction.guild.id)
-        
+
         if self.setting_key == "mute_time":
             if parse_time_to_seconds(val) <= 0:
                 return await interaction.response.send_message("❌ Định dạng không hợp lệ! Vui lòng dùng số kèm s, p, h.", ephemeral=True)
@@ -235,17 +247,17 @@ class SettingModal(discord.ui.Modal):
         else:
             if not val.isdigit() or int(val) < 1:
                 return await interaction.response.send_message("❌ Vui lòng nhập một số hợp lệ lớn hơn 0!", ephemeral=True)
-            
+
             new_val = int(val)
             current_settings = auto_delete_dict[guild_id_str]["settings"]
-            
+
             if self.setting_key == "warn_limit" and new_val >= current_settings.get("msg_limit", 10):
                 return await interaction.response.send_message("❌ Lỗi: Mức CẢNH CÁO phải NHỎ HƠN Mức PHẠT (Mute)!", ephemeral=True)
             if self.setting_key == "msg_limit" and new_val <= current_settings.get("warn_limit", 5):
                 return await interaction.response.send_message("❌ Lỗi: Mức PHẠT (Mute) phải LỚN HƠN Mức CẢNH CÁO!", ephemeral=True)
 
             auto_delete_dict[guild_id_str]["settings"][self.setting_key] = new_val
-            
+
         save_data(auto_delete_dict)
         new_embed = get_setting_embed(guild_id_str)
         await interaction.response.edit_message(embed=new_embed, view=self.view_instance)
@@ -265,7 +277,7 @@ class SettingView(discord.ui.View):
                 ephemeral=True
             )
             return False
-            
+
         p = interaction.user.guild_permissions
         if not (p.administrator or p.manage_messages or p.kick_members or p.ban_members or p.manage_guild):
             await interaction.response.send_message("❌ Bạn cần có quyền Quản trị / Staff!", ephemeral=True)
@@ -277,7 +289,7 @@ class SettingView(discord.ui.View):
         current_status = auto_delete_dict[self.guild_id_str]["settings"].get("anti_spam", False)
         auto_delete_dict[self.guild_id_str]["settings"]["anti_spam"] = not current_status
         save_data(auto_delete_dict)
-        
+
         button.style = discord.ButtonStyle.danger if current_status else discord.ButtonStyle.success
         await interaction.response.edit_message(embed=get_setting_embed(self.guild_id_str), view=self)
 
@@ -296,7 +308,7 @@ class SettingView(discord.ui.View):
     @discord.ui.button(label="Mức Phạt (Mute)", style=discord.ButtonStyle.danger, emoji="💬")
     async def edit_msg(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(SettingModal("msg_limit", "Mức Phạt Mute/Nuke (trong 10s)", "Ví dụ: 10", self))
-        
+
     @discord.ui.button(label="Cài Kênh Log", style=discord.ButtonStyle.secondary, emoji="📓")
     async def edit_log(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message("👉 Vui lòng ra ngoài kênh chat và gõ lệnh:\n`!setlogg #tên-kênh` để cài đặt\nHoặc gõ `!setlogg` để tắt.", ephemeral=True)
@@ -316,11 +328,13 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
+    global blocked_spam_count
+    
     if message.author == bot.user or not message.guild:
         return
 
     guild_id_str = str(message.guild.id)
-    
+
     if guild_id_str not in auto_delete_dict:
         auto_delete_dict[guild_id_str] = {"ids": [], "names": [], "settings": {"tag_limit": 5, "warn_limit": 5, "msg_limit": 10, "mute_time": "1p", "anti_spam": False, "log_channel": None, "block_fake_bot": False}}
     elif "settings" not in auto_delete_dict[guild_id_str]:
@@ -338,7 +352,7 @@ async def on_message(message):
     server_data = auto_delete_dict[guild_id_str]
     server_settings = server_data["settings"]
     author_id = message.author.id
-    
+
     mute_time_raw = server_settings.get("mute_time", "1p")
     mute_seconds = parse_time_to_seconds(mute_time_raw)
     if mute_seconds <= 0: mute_seconds = 60
@@ -347,10 +361,11 @@ async def on_message(message):
     if server_settings.get("block_fake_bot", False):
         if message.author.bot or message.webhook_id:
             if not isinstance(message.author, discord.Member) or message.webhook_id:
+                blocked_spam_count += 1
                 await safe_delete(message)
-                
+
                 target_name = message.author.name.lower()
-                
+
                 if target_name not in auto_delete_dict[guild_id_str]["names"]:
                     auto_delete_dict[guild_id_str]["names"].append(target_name)
                     save_data(auto_delete_dict)
@@ -385,7 +400,7 @@ async def on_message(message):
     if server_settings.get("anti_spam", False):
         tracker_key = (guild_id_str, author_id)
         now = datetime.now()
-        
+
         # --- 1A. KIỂM TRA SPAM NHANH (FAST SPAM) ---
         if tracker_key not in msg_spam_tracker:
             msg_spam_tracker[tracker_key] = {"count": 1, "start_time": now}
@@ -405,6 +420,7 @@ async def on_message(message):
                 await send_mod_log(message.guild, "⚠️ Phát hiện tốc độ cao", f"**Đối tượng:** {message.author.mention}\n**Hành động:** Đã nhắc nhở\n**Lý do:** Đạt mức cảnh cáo ({warn_limit} tin/10s)", discord.Color.yellow())
 
         elif current_msg_count >= msg_limit:
+            blocked_spam_count += 1
             if is_staff_or_bot:
                 await safe_delete(message)
             else:
@@ -435,10 +451,11 @@ async def on_message(message):
                 tracker = slow_spam_tracker[tracker_key]
                 if tracker["content"] == msg_content and (now - tracker["last_time"]).total_seconds() < 60:
                     tracker["count"] += 1
-                    
+
                     if tracker["count"] >= 5:
+                        blocked_spam_count += 1
                         await safe_delete(message)
-                        
+
                         if not is_staff_or_bot:
                             if tracker["first_duplicate_time"] is None:
                                 tracker["first_duplicate_time"] = now 
@@ -458,10 +475,10 @@ async def on_message(message):
                                             save_data(auto_delete_dict)
                                             await message.channel.send(f"🛡️ **Anti-Nuke:** Khóa Webhook lạ (`{message.author.name}`) do spam lặp chữ!", delete_after=15)
                                             await send_mod_log(message.guild, "💀 Tiêu Diệt Nuke Bot/Webhook", f"**Đối tượng:** `{target_name}`\n**Hành động:** Block Vĩnh viễn\n**Lý do:** Spam lặp nội dung", discord.Color.brand_red())
-                                    
+
                                     slow_spam_tracker[tracker_key] = {"content": "", "last_time": now, "count": 0, "first_duplicate_time": None}
                                     return 
-                        
+
                         tracker["last_time"] = now
                         return 
                     else:
@@ -488,7 +505,7 @@ async def on_message(message):
         if valid_mentions:
             tracker_key = (guild_id_str, author_id)
             now = datetime.now()
-            
+
             if tracker_key not in tag_spam_tracker:
                 tag_spam_tracker[tracker_key] = {"count": 1, "last_time": now}
             else:
@@ -502,6 +519,7 @@ async def on_message(message):
             tag_limit = server_settings["tag_limit"]
 
             if current_count >= tag_limit:
+                blocked_spam_count += 1
                 if isinstance(message.author, discord.Member) and not is_staff_or_bot:
                     try:
                         await message.author.timeout(timedelta(seconds=mute_seconds), reason="Spam tag")
@@ -523,8 +541,9 @@ async def on_message(message):
                     )
                 except discord.HTTPException:
                     pass
+        blocked_spam_count += 1
         await safe_delete(message)
-            
+
     await bot.process_commands(message)
 
 # --- 3. LỆNH ĐIỀU KHIỂN ---
@@ -538,7 +557,7 @@ async def cmdhelp(ctx):
         color=discord.Color.green()
     )
     embed.set_image(url="https://cdn.discordapp.com/attachments/1344684960878952590/1562683883575845004/attachment.gif")
-    
+
     embed.add_field(
         name="🛠️ `!setting`", 
         value="Mở bảng điều khiển chính để chỉnh sửa các mốc giới hạn, thời gian mute và bật/tắt tính năng chống spam.", 
@@ -565,6 +584,11 @@ async def cmdhelp(ctx):
         inline=False
     )
     embed.add_field(
+        name="📊 `!stats` / `!health`", 
+        value="Xem báo cáo sức khỏe chi tiết của Bot, độ trễ API, dung lượng RAM và tổng số tin rác đã chặn.", 
+        inline=False
+    )
+    embed.add_field(
         name="👻 Tự động xóa & Chống Ghost Ping", 
         value="• `!autodelete <ID/Tên>`: Đưa người dùng vào danh sách đen (tự xóa tin nhắn, cảnh cáo ghost ping).\n• `!stopdelete <ID/Tên>`: Xóa khỏi danh sách đen.\n• `!listdelete`: Xem danh sách đen hiện tại.", 
         inline=False
@@ -572,19 +596,67 @@ async def cmdhelp(ctx):
     embed.set_footer(text="Hệ thống Vệ sĩ tự động • Chỉ dành cho Staff/Admin")
     await ctx.send(embed=embed)
 
+@bot.command(name="stats", aliases=["health"])
+@is_high_permission()
+async def stats(ctx):
+    # Tính thời gian Uptime
+    uptime_seconds = int(time.time() - start_time)
+    uptime_str = str(timedelta(seconds=uptime_seconds))
+
+    # Tính độ trễ API (Ping)
+    ping = round(bot.latency * 1000)
+    ping_status = "🟢 Tốt" if ping < 150 else ("🟡 Trung bình" if ping < 300 else "🔴 Kém")
+
+    # Lấy thông tin tài nguyên hệ thống
+    process = psutil.Process(os.getpid())
+    ram_usage = process.memory_info().rss / (1024 * 1024) # Đổi sang MB
+    cpu_usage = psutil.cpu_percent()
+
+    # Đếm số lượng Server và Thành viên bot đang phục vụ
+    guild_count = len(bot.guilds)
+    total_members = sum(g.member_count for g in bot.guilds)
+
+    embed = discord.Embed(
+        title="📊 BÁO CÁO SỨC KHỎE HỆ THỐNG", 
+        color=discord.Color.teal(),
+        timestamp=datetime.now()
+    )
+    embed.set_thumbnail(url=bot.user.avatar.url if bot.user.avatar else bot.user.default_avatar.url)
+    embed.set_image(url="https://cdn.discordapp.com/attachments/1344684960878952590/1562683883575845004/attachment.gif")
+
+    embed.add_field(
+        name="⚙️ Trạng Thái Kết Nối", 
+        value=f"• **Ping Discord:** `{ping}ms` ({ping_status})\n• **Uptime:** `{uptime_str}`\n• **Lưu trữ Cloud:** `🟢 Hoạt động`", 
+        inline=False
+    )
+    embed.add_field(
+        name="💻 Tài Nguyên Cấu Hình", 
+        value=f"• **RAM Usage:** `{ram_usage:.2f} MB`\n• **CPU Usage:** `{cpu_usage}%`\n• **Nền tảng:** `Flask / Render`", 
+        inline=False
+    )
+    embed.add_field(
+        name="🛡️ Hiệu Suất Bảo Vệ", 
+        value=f"• **Phục vụ:** `{guild_count} Server` | `{total_members} Thành viên`\n• **Tổng tin rác đã chặn:** `{blocked_spam_count} tin nhắn`\n• **Anti-Nuke / Anti-Spam:** `🟢 Đang trực`", 
+        inline=False
+    )
+    
+    embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.avatar.url if ctx.author.avatar else ctx.author.default_avatar.url)
+    await ctx.send(embed=embed)
+
+
 @bot.command(name="backup")
 @is_high_permission()
 async def backup(ctx):
     guild = ctx.guild
     msg = await ctx.send("🔄 Đang quét và sao lưu cấu trúc Server (Kênh, Role, Phân quyền)...")
-    
+
     backup_data = {
         "guild_name": guild.name,
         "backup_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "roles": [],
         "categories": []
     }
-    
+
     # 1. Quét Danh sách Role
     for role in reversed(guild.roles):
         if role.is_default():  # Bỏ qua @everyone mặc định
@@ -596,7 +668,7 @@ async def backup(ctx):
             "hoist": role.hoist,
             "mentionable": role.mentionable
         })
-        
+
     # 2. Quét Danh mục (Category) và Các Kênh bên trong (Text + Voice)
     for category in guild.categories:
         cat_data = {
@@ -605,7 +677,7 @@ async def backup(ctx):
             "text_channels": [],
             "voice_channels": []
         }
-        
+
         for ch in category.channels:
             if isinstance(ch, discord.TextChannel):
                 cat_data["text_channels"].append({
@@ -622,9 +694,9 @@ async def backup(ctx):
                     "bitrate": ch.bitrate,
                     "overwrites": serialize_overwrites(ch)
                 })
-        
+
         backup_data["categories"].append(cat_data)
-        
+
     # 3. Quét các kênh tự do không nằm trong Danh mục nào
     no_cat_data = {
         "name": "UNCATEGORIZED",
@@ -651,18 +723,18 @@ async def backup(ctx):
                 })
     if no_cat_data["text_channels"] or no_cat_data["voice_channels"]:
         backup_data["categories"].append(no_cat_data)
-        
+
     # Lưu vào Upstash Redis
     guild_id_str = str(guild.id)
     if guild_id_str not in auto_delete_dict:
         auto_delete_dict[guild_id_str] = {}
     auto_delete_dict[guild_id_str]["backup"] = backup_data
     save_data(auto_delete_dict)
-    
+
     # Đóng gói dữ liệu thành file backup_server.json gửi vào chat
     json_bytes = json.dumps(backup_data, indent=4, ensure_ascii=False).encode('utf-8')
     file = discord.File(io.BytesIO(json_bytes), filename=f"backup_{guild.id}.json")
-    
+
     await msg.edit(content=f"✅ **Đã sao lưu thành công!** Dữ liệu đã lưu lên Cloud (Upstash Redis) và đính kèm file bên dưới:")
     await ctx.send(file=file)
 
@@ -672,7 +744,7 @@ async def restore(ctx):
     guild = ctx.guild
     guild_id_str = str(guild.id)
     backup_data = None
-    
+
     # 1. Ưu tiên đọc dữ liệu từ File .json người dùng đính kèm khi gõ !restore
     if ctx.message.attachments:
         attachment = ctx.message.attachments[0]
@@ -682,16 +754,16 @@ async def restore(ctx):
                 backup_data = json.loads(content.decode('utf-8'))
             except Exception as e:
                 return await ctx.send("❌ File `.json` bị lỗi hoặc không đúng định dạng!")
-            
+
     # 2. Nếu không đính kèm file, tự động lấy bản lưu gần nhất từ Cloud (Upstash Redis)
     if not backup_data:
         backup_data = auto_delete_dict.get(guild_id_str, {}).get("backup")
-        
+
     if not backup_data:
         return await ctx.send("❌ Không tìm thấy bản sao lưu nào trên Cloud hoặc file `.json` đính kèm!")
-        
+
     msg = await ctx.send("⚠️ **ĐANG KHÔI PHỤC SERVER...** Quá trình này sẽ diễn ra từ từ để tránh bị Discord hạn chế kết nối (Rate Limit).")
-    
+
     # A. Tạo lại các Role
     created_roles = {}
     for r_data in backup_data.get("roles", []):
@@ -711,7 +783,7 @@ async def restore(ctx):
                 pass
         else:
             created_roles[r_data["name"]] = existing
-            
+
     # Hàm gán lại phân quyền Role cho Kênh
     def build_overwrites(raw_overwrites):
         ow = {}
@@ -727,7 +799,7 @@ async def restore(ctx):
     for cat_data in backup_data.get("categories", []):
         cat_name = cat_data["name"]
         category_obj = None
-        
+
         if cat_name != "UNCATEGORIZED":
             category_obj = discord.utils.get(guild.categories, name=cat_name)
             if not category_obj:
@@ -739,7 +811,7 @@ async def restore(ctx):
                     await asyncio.sleep(0.5)
                 except discord.HTTPException:
                     pass
-                    
+
         # Dựng lại Kênh chữ (Text Channels)
         for txt in cat_data.get("text_channels", []):
             if not discord.utils.get(guild.text_channels, name=txt["name"], category=category_obj):
@@ -755,7 +827,7 @@ async def restore(ctx):
                     await asyncio.sleep(0.5)
                 except discord.HTTPException:
                     pass
-                    
+
         # Dựng lại Kênh thoại (Voice Channels)
         for vc in cat_data.get("voice_channels", []):
             if not discord.utils.get(guild.voice_channels, name=vc["name"], category=category_obj):
@@ -770,7 +842,7 @@ async def restore(ctx):
                     await asyncio.sleep(0.5)
                 except discord.HTTPException:
                     pass
-                    
+
     await msg.edit(content="✅ **KHÔI PHỤC HOÀN TẤT!** Toàn bộ Kênh thoại, Kênh chữ, Role và Phân quyền đã được tái tạo.")
 
 @bot.command(name="setlogg")
@@ -779,7 +851,7 @@ async def setlogg(ctx, channel: discord.TextChannel = None):
     guild_id_str = str(ctx.guild.id)
     if guild_id_str not in auto_delete_dict:
         auto_delete_dict[guild_id_str] = {"ids": [], "names": [], "settings": {"tag_limit": 5, "warn_limit": 5, "msg_limit": 10, "mute_time": "1p", "anti_spam": False, "log_channel": None, "block_fake_bot": False}}
-        
+
     if channel:
         auto_delete_dict[guild_id_str]["settings"]["log_channel"] = channel.id
         save_data(auto_delete_dict)
@@ -816,7 +888,7 @@ async def setting(ctx):
     guild_id_str = str(ctx.guild.id)
     if guild_id_str not in auto_delete_dict:
         auto_delete_dict[guild_id_str] = {"ids": [], "names": [], "settings": {"tag_limit": 5, "warn_limit": 5, "msg_limit": 10, "mute_time": "1p", "anti_spam": False, "log_channel": None, "block_fake_bot": False}}
-    
+
     embed = get_setting_embed(guild_id_str)
     view = SettingView(guild_id_str, ctx.author)
     await ctx.send(embed=embed, view=view)
@@ -827,14 +899,14 @@ async def nospam(ctx):
     guild_id_str = str(ctx.guild.id)
     if guild_id_str not in auto_delete_dict:
         auto_delete_dict[guild_id_str] = {"ids": [], "names": [], "settings": {"tag_limit": 5, "warn_limit": 5, "msg_limit": 10, "mute_time": "1p", "anti_spam": False, "log_channel": None, "block_fake_bot": False}}
-    
+
     current_status = auto_delete_dict[guild_id_str]["settings"].get("anti_spam", False)
     auto_delete_dict[guild_id_str]["settings"]["anti_spam"] = not current_status
     save_data(auto_delete_dict)
-    
+
     limit = auto_delete_dict[guild_id_str]["settings"]["msg_limit"]
     mute_time_raw = auto_delete_dict[guild_id_str]["settings"].get("mute_time", "1p")
-    
+
     if not current_status:
         await ctx.send(f"✅ Đã **BẬT 🟢** chế độ chống Spam.\n*(Nhắn quá {limit} tin trong 10 giây sẽ bị MUTE {mute_time_raw})*")
     else:
@@ -953,7 +1025,7 @@ async def listdelete(ctx):
         else:
             items.append(f"• ID: `{user_id}` (Ngoài server/Webhook)")
             targets_for_buttons.append(("id", user_id, str(user_id)))
-            
+
     for name in names:
         items.append(f"• Tên/Webhook: `{name}`")
         targets_for_buttons.append(("name", name, name))
@@ -999,6 +1071,7 @@ async def listdelete(ctx):
 
     await ctx.send(f"📋 **Danh sách bị tự động xóa:**\n{list_str}\n*(Bấm nút để tắt nhanh)*", view=StopDeleteView(ctx.author))
 
+
 @autodelete.error
 @stopdelete.error
 @setlogg.error
@@ -1009,6 +1082,7 @@ async def listdelete(ctx):
 @cmdhelp.error
 @backup.error
 @restore.error
+@stats.error
 async def command_permission_error(ctx, error):
     if isinstance(error, commands.CheckFailure):
         await ctx.send(f"❌ {ctx.author.mention}, m có quyền dell đâu mà sài lol", delete_after=10)
