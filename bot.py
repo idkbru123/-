@@ -708,7 +708,7 @@ async def listdelete(ctx):
 @cmdhelp.error
 async def command_permission_error(ctx, error):
     if isinstance(error, commands.CheckFailure):
-        await ctx.send(f"❌ {ctx.author.mention}, bạn cần quyền Quản trị / Staff!", delete_after=10)
+        await ctx.send(f"❌ {ctx.author.mention}, m có quyền dell đâu mà sài lol", delete_after=10)
     elif isinstance(error, commands.MissingRequiredArgument):
         await ctx.send(f"⚠️ Lỗi cú pháp! Gõ thiếu thông tin (vd: tag sai tên, thiếu kênh...).", delete_after=10)
 
