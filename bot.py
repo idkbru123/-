@@ -359,21 +359,14 @@ async def on_message(message):
     # 0. HỆ THỐNG TIÊU DIỆT BOT/WEBHOOK MA (CHẠY NGAY LẬP TỨC TỪ TIN NHẮN #1)
     if server_settings.get("block_fake_bot", False):
         if message.author.bot or message.webhook_id:
-            is_fake = False
+            is_fake = True
             
-            # Xử lý nếu là Webhook
-            if message.webhook_id:
-                is_fake = True
-            else:
-                author_member = message.author
-                if isinstance(author_member, discord.User):
-                    author_member = message.guild.get_member(author_member.id)
-                
-                # Bot ngoài server hoặc không có Role nào (chỉ có @everyone) -> Bị xóa
-                if not author_member:
-                    is_fake = True
-                elif len(author_member.roles) <= 1:
-                    is_fake = True
+            # Tra cứu xem ID người gửi có tương ứng với 1 Member hợp lệ trong Server không
+            author_member = message.guild.get_member(message.author.id)
+            
+            # Nếu là Member thật VÀ đã được gán ít nhất 1 Role (ngoài role @everyone mặc định) -> Hợp lệ!
+            if author_member and len(author_member.roles) > 1:
+                is_fake = False
 
             if is_fake:
                 blocked_spam_count += 1
@@ -396,18 +389,19 @@ async def on_message(message):
                     await send_mod_log(
                         message.guild,
                         "💀 Tiêu Diệt Bot/Webhook Ma (Tức Thì)",
-                        f"**Đối tượng:** `{message.author.name}`\n**Hành động:** Xóa lập tức & Block vĩnh viễn\n**Lý do:** Kẻ gửi là Bot không được cấp Role (hoặc Webhook giả mạo).",
+                        f"**Đối tượng:** `{message.author.name}`\n**Hành động:** Xóa lập tức & Block vĩnh viễn\n**Lý do:** Kẻ gửi không có Role hợp lệ trong Server (Webhooks/Bot lạ).",
                         discord.Color.brand_red()
                     )
                 return 
 
     # KIỂM TRA QUYỀN (LOẠI TRỪ WEBHOOK/BOT MA KHỎI QUYỀN STAFF)
     is_staff_or_bot = False
-    if isinstance(message.author, discord.Member) and not message.webhook_id:
-        if message.author.bot:
+    author_member = message.guild.get_member(message.author.id)
+    if author_member:
+        if author_member.bot:
             is_staff_or_bot = True 
         else:
-            p = message.author.guild_permissions
+            p = author_member.guild_permissions
             if p.administrator or p.manage_messages or p.manage_guild or p.kick_members or p.ban_members:
                 is_staff_or_bot = True 
 
