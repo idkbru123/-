@@ -174,7 +174,6 @@ def serialize_overwrites(channel):
 # TỰ ĐỘNG XÓA LỆNH BOT
 @bot.before_invoke
 async def delete_command_message(ctx):
-    # Xóa tin nhắn chứa lệnh của người dùng sau khi lệnh bắt đầu chạy
     if ctx.message:
         await safe_delete(ctx.message, retry_on_ratelimit=False)
 
@@ -210,7 +209,7 @@ def get_setting_embed(guild_id_str):
     )
     embed.add_field(
         name="4. Chặn Bot/Webhook Ma (!blockfakebot)", 
-        value=f"• Trạng thái: **{fake_bot_status}**\n• Diệt ngay lập tức Bot/Webhook giả mạo không nằm trong danh sách thành viên Server, block thẳng vào danh sách đen.", 
+        value=f"• Trạng thái: **{fake_bot_status}**\n• Diệt ngay lập tức Bot/Webhook không có Role hợp lệ trong Server, block thẳng vào danh sách đen.", 
         inline=False
     )
     embed.add_field(
@@ -360,7 +359,23 @@ async def on_message(message):
     # 0. HỆ THỐNG TIÊU DIỆT BOT/WEBHOOK MA (CHẠY NGAY LẬP TỨC TỪ TIN NHẮN #1)
     if server_settings.get("block_fake_bot", False):
         if message.author.bot or message.webhook_id:
-            if not isinstance(message.author, discord.Member) or message.webhook_id:
+            is_fake = False
+            
+            # Xử lý nếu là Webhook
+            if message.webhook_id:
+                is_fake = True
+            else:
+                author_member = message.author
+                if isinstance(author_member, discord.User):
+                    author_member = message.guild.get_member(author_member.id)
+                
+                # Bot ngoài server hoặc không có Role nào (chỉ có @everyone) -> Bị xóa
+                if not author_member:
+                    is_fake = True
+                elif len(author_member.roles) <= 1:
+                    is_fake = True
+
+            if is_fake:
                 blocked_spam_count += 1
                 await safe_delete(message)
 
@@ -372,7 +387,7 @@ async def on_message(message):
 
                     try:
                         await message.channel.send(
-                            f"🛡️ **Anti-Nuke:** Đã tiêu diệt và Block Bot/Webhook ma (`{message.author.name}`) ngay từ tin nhắn đầu tiên!",
+                            f"🛡️ **Anti-Nuke:** Đã tiêu diệt Bot/Webhook lạ (`{message.author.name}`) do không có Role hợp lệ!",
                             delete_after=15
                         )
                     except discord.HTTPException:
@@ -381,7 +396,7 @@ async def on_message(message):
                     await send_mod_log(
                         message.guild,
                         "💀 Tiêu Diệt Bot/Webhook Ma (Tức Thì)",
-                        f"**Đối tượng:** `{message.author.name}`\n**Hành động:** Xóa lập tức & Block vĩnh viễn\n**Lý do:** Kẻ gửi không phải là thành viên hợp lệ (hoặc là Webhook).",
+                        f"**Đối tượng:** `{message.author.name}`\n**Hành động:** Xóa lập tức & Block vĩnh viễn\n**Lý do:** Kẻ gửi là Bot không được cấp Role (hoặc Webhook giả mạo).",
                         discord.Color.brand_red()
                     )
                 return 
@@ -580,7 +595,7 @@ async def cmdhelp(ctx):
     )
     embed.add_field(
         name="💾 `!backup` & `!restore`", 
-        value="• `!backup`: Sao lưu toàn bộ Role, Danh mục, Kênh chữ/thoại & Phân quyền lên Cloud + file `.json`.\n• `!restore`: Khôi phục lại toàn bộ cấu trúc Server (đính kèm file `.json` nếu có).", 
+        value="• `!backup`: Sao lưu toàn bộ Role, Danh mục, Kênh chữ/thoại & Phân quyền lên Cloud + gửi file `.json` qua DM.\n• `!restore`: Khôi phục lại toàn bộ cấu trúc Server (đính kèm file `.json` nếu có).", 
         inline=False
     )
     embed.add_field(
@@ -599,20 +614,16 @@ async def cmdhelp(ctx):
 @bot.command(name="stats", aliases=["health"])
 @is_high_permission()
 async def stats(ctx):
-    # Tính thời gian Uptime
     uptime_seconds = int(time.time() - start_time)
     uptime_str = str(timedelta(seconds=uptime_seconds))
 
-    # Tính độ trễ API (Ping)
     ping = round(bot.latency * 1000)
     ping_status = "🟢 Tốt" if ping < 150 else ("🟡 Trung bình" if ping < 300 else "🔴 Kém")
 
-    # Lấy thông tin tài nguyên hệ thống
     process = psutil.Process(os.getpid())
-    ram_usage = process.memory_info().rss / (1024 * 1024) # Đổi sang MB
+    ram_usage = process.memory_info().rss / (1024 * 1024)
     cpu_usage = psutil.cpu_percent()
 
-    # Đếm số lượng Server và Thành viên bot đang phục vụ
     guild_count = len(bot.guilds)
     total_members = sum(g.member_count for g in bot.guilds)
 
@@ -643,7 +654,6 @@ async def stats(ctx):
     embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.avatar.url if ctx.author.avatar else ctx.author.default_avatar.url)
     await ctx.send(embed=embed)
 
-
 @bot.command(name="backup")
 @is_high_permission()
 async def backup(ctx):
@@ -657,9 +667,8 @@ async def backup(ctx):
         "categories": []
     }
 
-    # 1. Quét Danh sách Role
     for role in reversed(guild.roles):
-        if role.is_default():  # Bỏ qua @everyone mặc định
+        if role.is_default():
             continue
         backup_data["roles"].append({
             "name": role.name,
@@ -669,7 +678,6 @@ async def backup(ctx):
             "mentionable": role.mentionable
         })
 
-    # 2. Quét Danh mục (Category) và Các Kênh bên trong (Text + Voice)
     for category in guild.categories:
         cat_data = {
             "name": category.name,
@@ -697,7 +705,6 @@ async def backup(ctx):
 
         backup_data["categories"].append(cat_data)
 
-    # 3. Quét các kênh tự do không nằm trong Danh mục nào
     no_cat_data = {
         "name": "UNCATEGORIZED",
         "overwrites": [],
@@ -724,19 +731,22 @@ async def backup(ctx):
     if no_cat_data["text_channels"] or no_cat_data["voice_channels"]:
         backup_data["categories"].append(no_cat_data)
 
-    # Lưu vào Upstash Redis
     guild_id_str = str(guild.id)
     if guild_id_str not in auto_delete_dict:
         auto_delete_dict[guild_id_str] = {}
     auto_delete_dict[guild_id_str]["backup"] = backup_data
     save_data(auto_delete_dict)
 
-    # Đóng gói dữ liệu thành file backup_server.json gửi vào chat
     json_bytes = json.dumps(backup_data, indent=4, ensure_ascii=False).encode('utf-8')
     file = discord.File(io.BytesIO(json_bytes), filename=f"backup_{guild.id}.json")
 
-    await msg.edit(content=f"✅ **Đã sao lưu thành công!** Dữ liệu đã lưu lên Cloud (Upstash Redis) và đính kèm file bên dưới:")
-    await ctx.send(file=file)
+    # GỬI FILE VÀO DM CỦA ADMIN
+    try:
+        await ctx.author.send(f"📂 Đây là file backup cấu trúc cho Server **{guild.name}** của bạn:", file=file)
+        await msg.edit(content=f"✅ **Đã sao lưu thành công!** Dữ liệu đã lưu lên Cloud. \n📥 File backup `.json` đã được gửi vào **Tin nhắn riêng (DM)** của bạn!")
+    except discord.Forbidden:
+        await msg.edit(content=f"✅ **Đã sao lưu thành công!** Dữ liệu đã lưu lên Cloud.\n⚠️ {ctx.author.mention} Bot không thể gửi file cho bạn vì bạn đang khóa Tin nhắn riêng (DM). File được đính kèm tạm ở dưới đây:")
+        await ctx.send(file=file)
 
 @bot.command(name="restore")
 @is_high_permission()
@@ -745,7 +755,6 @@ async def restore(ctx):
     guild_id_str = str(guild.id)
     backup_data = None
 
-    # 1. Ưu tiên đọc dữ liệu từ File .json người dùng đính kèm khi gõ !restore
     if ctx.message.attachments:
         attachment = ctx.message.attachments[0]
         if attachment.filename.endswith(".json"):
@@ -755,7 +764,6 @@ async def restore(ctx):
             except Exception as e:
                 return await ctx.send("❌ File `.json` bị lỗi hoặc không đúng định dạng!")
 
-    # 2. Nếu không đính kèm file, tự động lấy bản lưu gần nhất từ Cloud (Upstash Redis)
     if not backup_data:
         backup_data = auto_delete_dict.get(guild_id_str, {}).get("backup")
 
@@ -764,7 +772,6 @@ async def restore(ctx):
 
     msg = await ctx.send("⚠️ **ĐANG KHÔI PHỤC SERVER...** Quá trình này sẽ diễn ra từ từ để tránh bị Discord hạn chế kết nối (Rate Limit).")
 
-    # A. Tạo lại các Role
     created_roles = {}
     for r_data in backup_data.get("roles", []):
         existing = discord.utils.get(guild.roles, name=r_data["name"])
@@ -784,7 +791,6 @@ async def restore(ctx):
         else:
             created_roles[r_data["name"]] = existing
 
-    # Hàm gán lại phân quyền Role cho Kênh
     def build_overwrites(raw_overwrites):
         ow = {}
         for item in raw_overwrites:
@@ -795,7 +801,6 @@ async def restore(ctx):
                 ow[r_obj] = discord.PermissionOverwrite.from_pair(allow_perms, deny_perms)
         return ow
 
-    # B. Tạo lại Các Danh Mục & Kênh (Text + Voice)
     for cat_data in backup_data.get("categories", []):
         cat_name = cat_data["name"]
         category_obj = None
@@ -812,7 +817,6 @@ async def restore(ctx):
                 except discord.HTTPException:
                     pass
 
-        # Dựng lại Kênh chữ (Text Channels)
         for txt in cat_data.get("text_channels", []):
             if not discord.utils.get(guild.text_channels, name=txt["name"], category=category_obj):
                 try:
@@ -828,7 +832,6 @@ async def restore(ctx):
                 except discord.HTTPException:
                     pass
 
-        # Dựng lại Kênh thoại (Voice Channels)
         for vc in cat_data.get("voice_channels", []):
             if not discord.utils.get(guild.voice_channels, name=vc["name"], category=category_obj):
                 try:
@@ -924,7 +927,7 @@ async def blockfakebot(ctx):
     save_data(auto_delete_dict)
 
     if not current_status:
-        await ctx.send("✅ Đã **BẬT 🟢** chặn Bot/Webhook ma.\n*(Mọi tin nhắn từ bot/webhook không thực sự là thành viên server sẽ bị xóa ngay lập tức, không cần đợi spam.)*")
+        await ctx.send("✅ Đã **BẬT 🟢** chặn Bot/Webhook ma.\n*(Mọi tin nhắn từ bot/webhook không thực sự là thành viên server hoặc không có Role sẽ bị xóa ngay lập tức.)*")
     else:
         await ctx.send("✅ Đã **TẮT 🔴** chặn Bot/Webhook ma.")
 
@@ -1070,7 +1073,6 @@ async def listdelete(ctx):
             return callback
 
     await ctx.send(f"📋 **Danh sách bị tự động xóa:**\n{list_str}\n*(Bấm nút để tắt nhanh)*", view=StopDeleteView(ctx.author))
-
 
 @autodelete.error
 @stopdelete.error
