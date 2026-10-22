@@ -159,7 +159,7 @@ def get_setting_embed(guild_id_str):
     )
     embed.add_field(
         name="4. Nhật ký Vệ sĩ (Mod Logs)", 
-        value=f"• Kênh xuất Log: **{log_display}**\n👉 Dùng lệnh: `!setlog #kenh` để cài đặt.", 
+        value=f"• Kênh xuất Log: **{log_display}**\n👉 Dùng lệnh: `!setlogg #kenh` để cài đặt.", 
         inline=False
     )
     embed.set_footer(text="Bấm vào các nút bên dưới để tùy chỉnh")
@@ -255,7 +255,7 @@ class SettingView(discord.ui.View):
         
     @discord.ui.button(label="Cài Kênh Log", style=discord.ButtonStyle.secondary, emoji="📓")
     async def edit_log(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("👉 Vui lòng ra ngoài kênh chat và gõ lệnh:\n`!setlog #tên-kênh` để cài đặt\nHoặc gõ `!setlog` để tắt.", ephemeral=True)
+        await interaction.response.send_message("👉 Vui lòng ra ngoài kênh chat và gõ lệnh:\n`!setlogg #tên-kênh` để cài đặt\nHoặc gõ `!setlogg` để tắt.", ephemeral=True)
 
 @bot.event
 async def on_ready():
@@ -449,9 +449,9 @@ async def on_message(message):
 
 # --- 3. LỆNH ĐIỀU KHIỂN ---
 
-@bot.command(name="setlog")
+@bot.command(name="setlogg")
 @is_high_permission()
-async def setlog(ctx, channel: discord.TextChannel = None):
+async def setlogg(ctx, channel: discord.TextChannel = None):
     guild_id_str = str(ctx.guild.id)
     if guild_id_str not in auto_delete_dict:
         auto_delete_dict[guild_id_str] = {"ids": [], "names": [], "settings": {"tag_limit": 5, "warn_limit": 5, "msg_limit": 10, "mute_time": "1p", "anti_spam": False, "log_channel": None}}
@@ -663,7 +663,7 @@ async def listdelete(ctx):
 
 @autodelete.error
 @stopdelete.error
-@setlog.error
+@setlogg.error
 @lockdown.error
 @setting.error
 @nospam.error
