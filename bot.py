@@ -457,8 +457,7 @@ async def cmdhelp(ctx):
         description="Dưới đây là các lệnh để thiết lập hệ thống bảo vệ Server:",
         color=discord.Color.green()
     )
-    # THAY ĐỔI Ở ĐÂY: Dùng set_image thay vì set_thumbnail
-    embed.set_image(url="https://media1.tenor.com/m/5GqH_Z_4pToAAAAd/hack-hacker.gif")
+    embed.set_image(url="https://cdn.discordapp.com/attachments/1344684960878952590/1562683883575845004/attachment.gif")
     
     embed.add_field(
         name="🛠️ `!setting`", 
