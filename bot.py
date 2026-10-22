@@ -48,6 +48,11 @@ REDIS_KEY = "bot_data"
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "idkbru123/-")
 
+# DANH SÁCH ID ĐƯỢC PHÉP DÙNG LỆNH !REPLACECODE (Đã thêm ID của bạn)
+EXTRA_OWNER_IDS = [
+    1064147446894174278,
+]
+
 def load_data():
     if not UPSTASH_URL or not UPSTASH_TOKEN:
         print("CẢNH BÁO: Chưa cấu hình UPSTASH_REDIS_REST_URL / TOKEN. Dữ liệu sẽ KHÔNG được lưu!")
@@ -121,6 +126,15 @@ def is_high_permission():
             return True
         raise commands.CheckFailure("Lỗi thiếu quyền")
     return commands.check(predicate)
+
+# HÀM KIỂM TRA QUYỀN SỬA CODE (Chủ bot + Danh sách ID phụ)
+async def check_replace_permission(ctx):
+    is_owner = await ctx.bot.is_owner(ctx.author)
+    if is_owner:
+        return True
+    if ctx.author.id in EXTRA_OWNER_IDS:
+        return True
+    raise commands.CheckFailure("Chỉ Chủ bot hoặc người được cấp quyền mới dùng được lệnh này!")
 
 # HÀM QUY ĐỔI CHUỖI THỜI GIAN THÀNH GIÂY
 def parse_time_to_seconds(time_str):
@@ -580,9 +594,28 @@ async def on_message(message):
 
 # --- 3. LỆNH ĐIỀU KHIỂN ---
 
-# LỆNH TỰ ĐỘNG CHỈNH SỬA CODE QUA GITHUB API (KIỂM TRA CÚ PHÁP + DRY-RUN 5S)
-@bot.command(name="replacecode")
+# LỆNH CẤP QUYỀN CHO NGƯỜI KHÁC DÙNG !REPLACECODE
+@bot.command(name="addowner")
 @commands.is_owner()
+async def add_owner(ctx, member: discord.Member):
+    if member.id in EXTRA_OWNER_IDS:
+        return await ctx.send(f"⚠️ {member.mention} đã có trong danh sách từ trước rồi!")
+    
+    EXTRA_OWNER_IDS.append(member.id)
+    await ctx.send(f"✅ Đã cấp quyền sử dụng `!replacecode` cho {member.mention}!")
+
+# LỆNH GỠ QUYỀN
+@bot.command(name="removeowner")
+@commands.is_owner()
+async def remove_owner(ctx, member: discord.Member):
+    if member.id in EXTRA_OWNER_IDS:
+        EXTRA_OWNER_IDS.remove(member.id)
+        return await ctx.send(f"✅ Đã thu hồi quyền của {member.mention}!")
+    await ctx.send(f"❌ {member.mention} không nằm trong danh sách được cấp quyền phụ.")
+
+# LỆNH TỰ ĐỘNG CHỈNH SỬA CODE QUA GITHUB API (KIỂM TRA CÚ PHÁP + DRY-RUN 5S + PHÂN QUYỀN MỚI)
+@bot.command(name="replacecode")
+@commands.check(check_replace_permission)
 async def replace_code(ctx, *, args: str):
     if not GITHUB_TOKEN or not GITHUB_REPO:
         return await ctx.send("❌ Chưa cấu hình `GITHUB_TOKEN` hoặc `GITHUB_REPO` trên Render!")
@@ -625,7 +658,7 @@ async def replace_code(ctx, *, args: str):
         error_line = e.text.strip() if e.text else 'Không xác định'
         return await msg.edit(content=f"❌ **LỖI CÚ PHÁP (SYNTAX ERROR)!**\nCode bị lỗi nên bot **ĐÃ CHẶN LẠI**, không commit lên GitHub.\n\n• **Chi tiết lỗi:** `{e.msg}`\n• **Dòng lỗi:** `{e.lineno}`\n• **Đoạn mã lỗi:** `{error_line}`")
 
-    # 2. CHẠY THỬ NGẦM (DRY-RUN) TRONG 5 GIÂY ĐỂ BẮT LỖI RUNTIME (ImportError, NameError,...)
+    # 2. CHẠY THỬ NGẦM (DRY-RUN) TRONG 5 GIÂY ĐỂ BẮT LỖI RUNTIME
     await msg.edit(content="🧪 **Đang chạy thử code mới trong môi trường cách ly (5 giây)...**")
     
     test_filename = "temp_test_bot.py"
@@ -633,7 +666,6 @@ async def replace_code(ctx, *, args: str):
         f.write(updated_content)
 
     try:
-        # Chạy file tạm ở tiến trình riêng
         process = subprocess.Popen(
             [sys.executable, test_filename],
             stdout=subprocess.PIPE,
@@ -641,16 +673,13 @@ async def replace_code(ctx, *, args: str):
             text=True
         )
         
-        # Chờ 5 giây xem tiến trình có bị sập giữa chừng không
         await asyncio.sleep(5)
         
-        # Kiểm tra xem tiến trình có bị sập do lỗi runtime không
         if process.poll() is not None:
             _, stderr = process.communicate()
             if os.path.exists(test_filename): os.remove(test_filename)
             return await msg.edit(content=f"❌ **LỖI RUNTIME/KHỞI CHẠY (BOT SẬP KHI CHẠY THỬ)!**\nĐã chặn commit để bảo vệ Bot.\n\n```text\n{stderr[:1500]}\n```")
         else:
-            # Tiến trình vẫn sống tốt sau 5s -> Tắt tiến trình chạy thử
             process.terminate()
             process.wait()
 
