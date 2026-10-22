@@ -5,6 +5,7 @@ from threading import Thread
 import os
 import json
 import re
+import requests
 from datetime import datetime, timedelta
 
 # --- 1. WEB SERVER ẢO GIỮ BOT ONLINE TRÊN RENDER ---
@@ -29,21 +30,40 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- HỆ THỐNG LƯU TRỮ VÀO FILE JSON ---
-DATA_FILE = "data.json"
+# --- HỆ THỐNG LƯU TRỮ VĨNH VIỄN QUA UPSTASH REDIS (THAY CHO FILE JSON) ---
+UPSTASH_URL = os.environ.get("UPSTASH_REDIS_REST_URL")
+UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
+REDIS_KEY = "bot_data"
 
 def load_data():
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            pass
+    if not UPSTASH_URL or not UPSTASH_TOKEN:
+        print("CẢNH BÁO: Chưa cấu hình UPSTASH_REDIS_REST_URL / TOKEN. Dữ liệu sẽ KHÔNG được lưu!")
+        return {}
+    try:
+        r = requests.get(
+            f"{UPSTASH_URL}/get/{REDIS_KEY}",
+            headers={"Authorization": f"Bearer {UPSTASH_TOKEN}"},
+            timeout=10
+        )
+        result = r.json().get("result")
+        if result:
+            return json.loads(result)
+    except Exception as e:
+        print(f"Lỗi khi load data từ Upstash: {e}")
     return {}
 
 def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4)
+    if not UPSTASH_URL or not UPSTASH_TOKEN:
+        return
+    try:
+        requests.post(
+            f"{UPSTASH_URL}/set/{REDIS_KEY}",
+            headers={"Authorization": f"Bearer {UPSTASH_TOKEN}"},
+            data=json.dumps(json.dumps(data)),
+            timeout=10
+        )
+    except Exception as e:
+        print(f"Lỗi khi save data lên Upstash: {e}")
 
 auto_delete_dict = load_data()
 
