@@ -116,6 +116,7 @@ def get_setting_embed(guild_id_str):
     if isinstance(mute_display, int): mute_display = f"{mute_display} phút"
     
     embed = discord.Embed(title="⚙️ BẢNG ĐIỀU KHIỂN CHỐNG SPAM", color=discord.Color.blue())
+    embed.set_image(url="https://cdn.discordapp.com/attachments/1344684960878952590/1562683883575845004/attachment.gif")
     embed.add_field(
         name="1. Mức phạt chung", 
         value=f"• Thời gian Mute: **{mute_display}**", 
