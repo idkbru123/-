@@ -50,7 +50,7 @@ auto_delete_dict = load_data()
 # Các bộ đếm Anti-Spam
 tag_spam_tracker = {}
 msg_spam_tracker = {} 
-slow_spam_tracker = {} # Bộ đếm cho Spam Từ Từ (Trùng nội dung)
+slow_spam_tracker = {} 
 
 # HÀM KIỂM TRA QUYỀN CAO
 def is_high_permission():
@@ -108,7 +108,7 @@ def get_setting_embed(guild_id_str):
     )
     embed.add_field(
         name="3. Chống Spam Tin nhắn (!nospam)", 
-        value=f"• Trạng thái tính năng: **{status}**\n• Mốc 1 (Cảnh cáo): **{settings.get('warn_limit', 5)} tin nhắn** / 10s\n• Mốc 2 (Bị Mute): **{settings['msg_limit']} tin nhắn** / 10s\n• Chống copy-paste: **Xóa tin nhắn từ lần trùng thứ 5**", 
+        value=f"• Trạng thái tính năng: **{status}**\n• Mốc 1 (Cảnh cáo): **{settings.get('warn_limit', 5)} tin nhắn** / 10s\n• Mốc 2 (Bị Mute): **{settings['msg_limit']} tin nhắn** / 10s\n• Chống copy-paste: **Xóa tin nhắn từ lần trùng thứ 5 (Staff/Bot chỉ xóa, không mute)**", 
         inline=False
     )
     embed.set_footer(text="Bấm vào các nút bên dưới để tùy chỉnh")
@@ -231,36 +231,44 @@ async def on_message(message):
     mute_seconds = parse_time_to_seconds(mute_time_raw)
     if mute_seconds <= 0: mute_seconds = 60
 
+    # Kiểm tra xem người nhắn có phải là Staff / Admin / Bot hoặc Webhook trong server không
+    is_staff_or_bot = message.author.bot
+    if isinstance(message.author, discord.Member):
+        p = message.author.guild_permissions
+        if p.administrator or p.manage_messages or p.manage_guild or p.kick_members or p.ban_members:
+            is_staff_or_bot = True
+
     # 1. HỆ THỐNG CHỐNG SPAM TOÀN DIỆN
     if server_settings.get("anti_spam", False):
-        is_staff = False
-        if isinstance(message.author, discord.Member):
-            p = message.author.guild_permissions
-            if p.administrator or p.manage_messages or p.manage_guild:
-                is_staff = True
-
-        if not is_staff:
-            tracker_key = (guild_id_str, author_id)
-            now = datetime.now()
-            
-            # --- 1A. KIỂM TRA SPAM NHANH (FAST SPAM) ---
-            if tracker_key not in msg_spam_tracker:
+        tracker_key = (guild_id_str, author_id)
+        now = datetime.now()
+        
+        # --- 1A. KIỂM TRA SPAM NHANH (FAST SPAM) ---
+        if tracker_key not in msg_spam_tracker:
+            msg_spam_tracker[tracker_key] = {"count": 1, "start_time": now}
+        else:
+            if (now - msg_spam_tracker[tracker_key]["start_time"]).total_seconds() > 10:
                 msg_spam_tracker[tracker_key] = {"count": 1, "start_time": now}
             else:
-                if (now - msg_spam_tracker[tracker_key]["start_time"]).total_seconds() > 10:
-                    msg_spam_tracker[tracker_key] = {"count": 1, "start_time": now}
-                else:
-                    msg_spam_tracker[tracker_key]["count"] += 1
+                msg_spam_tracker[tracker_key]["count"] += 1
 
-            current_msg_count = msg_spam_tracker[tracker_key]["count"]
-            warn_limit = server_settings["warn_limit"]
-            msg_limit = server_settings["msg_limit"]
+        current_msg_count = msg_spam_tracker[tracker_key]["count"]
+        warn_limit = server_settings["warn_limit"]
+        msg_limit = server_settings["msg_limit"]
 
-            if current_msg_count == warn_limit:
-                if isinstance(message.author, discord.Member) and not message.webhook_id:
-                    await message.channel.send(f"⚠️ {message.author.mention} **CẢNH CÁO:** Bạn đang gửi tin nhắn quá nhanh!", delete_after=10)
+        if current_msg_count == warn_limit and not is_staff_or_bot:
+            if isinstance(message.author, discord.Member) and not message.webhook_id:
+                await message.channel.send(f"⚠️ {message.author.mention} **CẢNH CÁO:** Bạn đang gửi tin nhắn quá nhanh!", delete_after=10)
 
-            elif current_msg_count >= msg_limit:
+        elif current_msg_count >= msg_limit:
+            # Nếu là Staff hoặc Bot: chỉ xóa tin nhắn mới nhất, KHÔNG MUTE
+            if is_staff_or_bot:
+                try:
+                    await message.delete()
+                except discord.Forbidden:
+                    pass
+            else:
+                # Nếu là thành viên thường: Tiến hành Mute
                 if isinstance(message.author, discord.Member) and not message.webhook_id:
                     try:
                         await message.author.timeout(timedelta(seconds=mute_seconds), reason="Phớt lờ cảnh cáo Spam")
@@ -277,29 +285,28 @@ async def on_message(message):
                         except discord.Forbidden:
                             pass
                         await message.channel.send(f"🛡️ **Anti-Nuke:** Phát hiện Webhook lạ (`{message.author.name}`) đang spam phá hoại! Đã khóa vào Danh Sách Đen.", delete_after=15)
-                msg_spam_tracker[tracker_key] = {"count": 0, "start_time": now}
+            msg_spam_tracker[tracker_key] = {"count": 0, "start_time": now}
 
 
-            # --- 1B. KIỂM TRA SPAM TỪ TỪ VÀ TRÙNG LẶP NỘI DUNG ---
-            msg_content = message.content.strip().lower()
-            if msg_content: 
-                if tracker_key in slow_spam_tracker:
-                    tracker = slow_spam_tracker[tracker_key]
-                    # Nếu tin nhắn y hệt tin nhắn trước đó (trong vòng 60s)
-                    if tracker["content"] == msg_content and (now - tracker["last_time"]).total_seconds() < 60:
-                        tracker["count"] += 1
+        # --- 1B. KIỂM TRA SPAM TỪ TỪ VÀ TRÙNG LẶP NỘI DUNG ---
+        msg_content = message.content.strip().lower()
+        if msg_content: 
+            if tracker_key in slow_spam_tracker:
+                tracker = slow_spam_tracker[tracker_key]
+                if tracker["content"] == msg_content and (now - tracker["last_time"]).total_seconds() < 60:
+                    tracker["count"] += 1
+                    
+                    if tracker["count"] >= 5:
+                        try:
+                            await message.delete() 
+                        except discord.Forbidden:
+                            pass
                         
-                        # Chỉ bắt đầu xóa từ lần trùng lặp thứ 5 (tức là 5 tin nhắn y hệt nhau)
-                        if tracker["count"] >= 5:
-                            try:
-                                await message.delete() 
-                            except discord.Forbidden:
-                                pass
-                            
+                        # Nếu là Staff/Bot thì chỉ xóa tin nhắn lặp chứ tuyệt đối không mute
+                        if not is_staff_or_bot:
                             if tracker["first_duplicate_time"] is None:
-                                tracker["first_duplicate_time"] = now # Bắt đầu đếm giờ 20s kể từ lúc bị xóa tin nhắn đầu tiên
+                                tracker["first_duplicate_time"] = now 
                             else:
-                                # Nếu quá 20s kể từ lúc bắt đầu bị xóa mà vẫn gửi đúng câu đó
                                 if (now - tracker["first_duplicate_time"]).total_seconds() >= 20:
                                     if isinstance(message.author, discord.Member) and not message.webhook_id:
                                         try:
@@ -314,19 +321,17 @@ async def on_message(message):
                                             save_data(auto_delete_dict)
                                             await message.channel.send(f"🛡️ **Anti-Nuke:** Khóa Webhook lạ (`{message.author.name}`) do spam lặp chữ!", delete_after=15)
                                     
-                                    # Đã phạt xong thì reset bộ đếm
                                     slow_spam_tracker[tracker_key] = {"content": "", "last_time": now, "count": 0, "first_duplicate_time": None}
                                     return 
-                            
-                            tracker["last_time"] = now
-                            return # Bị xóa thì dừng, không cho bot check các lệnh khác
-                        else:
-                            # Nếu dưới 5 tin, chưa bị xóa, chỉ cập nhật thời gian
-                            tracker["last_time"] = now
+                        
+                        tracker["last_time"] = now
+                        return 
                     else:
-                        slow_spam_tracker[tracker_key] = {"content": msg_content, "last_time": now, "count": 1, "first_duplicate_time": None}
+                        tracker["last_time"] = now
                 else:
                     slow_spam_tracker[tracker_key] = {"content": msg_content, "last_time": now, "count": 1, "first_duplicate_time": None}
+            else:
+                slow_spam_tracker[tracker_key] = {"content": msg_content, "last_time": now, "count": 1, "first_duplicate_time": None}
 
 
     # 2. TÍNH NĂNG TỰ ĐỘNG XÓA VÀ CHỐNG GHOST PING CỦA DANH SÁCH ĐEN
@@ -360,7 +365,7 @@ async def on_message(message):
             tag_limit = server_settings["tag_limit"]
 
             if current_count >= tag_limit:
-                if isinstance(message.author, discord.Member):
+                if isinstance(message.author, discord.Member) and not is_staff_or_bot:
                     try:
                         await message.author.timeout(timedelta(seconds=mute_seconds), reason="Spam tag")
                         await message.channel.send(
@@ -374,7 +379,7 @@ async def on_message(message):
                 pinged_users = ", ".join([user.mention for user in valid_mentions])
                 sender_display = message.author.mention if hasattr(message.author, 'mention') else f"**{message.author.name}**"
                 await message.channel.send(
-                    f"⚠️ **Ghost Ping!** {sender_display} vừa tag {pinged_users} ({current_count}/{tag_limit} lần - Tag {tag_limit} lần sẽ bị MUTE {mute_time_raw}).",
+                    f"⚠️ **Ghost Ping!** {sender_display} vừa tag {pinged_users} ({current_count}/{tag_limit} lần).",
                     delete_after=10
                 )
         try:
