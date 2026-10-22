@@ -11,6 +11,7 @@ import time
 import psutil
 from datetime import datetime, timedelta
 import io
+import base64
 
 # --- 1. WEB SERVER ẢO GIỮ BOT ONLINE TRÊN RENDER ---
 app = Flask(__name__)
@@ -40,6 +41,10 @@ start_time = time.time() # Lưu thời gian bắt đầu chạy bot để tính 
 UPSTASH_URL = os.environ.get("UPSTASH_REDIS_REST_URL")
 UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
 REDIS_KEY = "bot_data"
+
+# Cấu hình GitHub API cho tính năng tự sửa code
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "idkbru123/-")
 
 def load_data():
     if not UPSTASH_URL or not UPSTASH_TOKEN:
@@ -88,8 +93,6 @@ blocked_spam_count = 0 # Đếm tổng số spam đã chặn
 
 # --- HÀM XÓA TIN NHẮN AN TOÀN (CHỐNG 404 / 429) ---
 async def safe_delete(message, retry_on_ratelimit=True):
-    """Xóa 1 tin nhắn an toàn: bỏ qua nếu tin đã mất (404) hoặc thiếu quyền (403),
-    và tự chờ + thử lại đúng 1 lần nếu bị rate limit (429)."""
     try:
         await message.delete()
         return True
@@ -379,7 +382,7 @@ async def on_message(message):
     mute_seconds = parse_time_to_seconds(mute_time_raw)
     if mute_seconds <= 0: mute_seconds = 60
 
-    # 0. HỆ THỐNG TIÊU DIỆT BOT/WEBHOOK MA (CHẠY NGAY LẬP TỨC TỪ TIN NHẮN #1)
+    # 0. HỆ THỐNG TIÊU DIỆT BOT/WEBHOOK MA
     if server_settings.get("block_fake_bot", False):
         if message.author.bot or message.webhook_id:
             is_fake = True
@@ -430,7 +433,6 @@ async def on_message(message):
         tracker_key = (guild_id_str, author_id)
         now = datetime.now()
 
-        # --- 1A. KIỂM TRA SPAM NHANH (FAST SPAM) ---
         if tracker_key not in msg_spam_tracker:
             msg_spam_tracker[tracker_key] = {"count": 1, "start_time": now}
         else:
@@ -473,7 +475,6 @@ async def on_message(message):
                         await send_mod_log(message.guild, "💀 Tiêu Diệt Nuke Bot/Webhook", f"**Đối tượng:** `{target_name}`\n**Hành động:** Quét sạch chat & Block Vĩnh viễn\n**Lý do:** Xả spam tốc độ cao", discord.Color.brand_red())
             msg_spam_tracker[tracker_key] = {"count": 0, "start_time": now}
 
-        # --- 1B. KIỂM TRA SPAM TỪ TỪ VÀ TRÙNG LẶP NỘI DUNG ---
         msg_content = message.content.strip().lower()
         if msg_content: 
             if tracker_key in slow_spam_tracker:
@@ -576,6 +577,59 @@ async def on_message(message):
     await bot.process_commands(message)
 
 # --- 3. LỆNH ĐIỀU KHIỂN ---
+
+# LỆNH TỰ ĐỘNG CHỈNH SỬA CODE QUA GITHUB API (CHỈ CHỦ BOT MỚI DÙNG ĐƯỢC)
+@bot.command(name="replacecode")
+@commands.is_owner()
+async def replace_code(ctx, *, args: str):
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        return await ctx.send("❌ Chưa cấu hình `GITHUB_TOKEN` hoặc `GITHUB_REPO` trên Render!")
+
+    if "|||" not in args:
+        return await ctx.send("⚠️ Cú pháp: `!replacecode <code cũ hoặc ALL> ||| <code mới>`")
+
+    old_code, new_code = args.split("|||", 1)
+    old_code = old_code.strip()
+    new_code = new_code.strip()
+
+    msg = await ctx.send("🔄 Đang kết nối GitHub để cập nhật file `bot.py`...")
+
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/bot.py"
+
+    # Lấy nội dung file hiện tại từ GitHub
+    r = requests.get(url, headers=headers)
+    if r.status_code != 200:
+        return await msg.edit(content=f"❌ Lỗi khi tải file từ GitHub: `{r.json().get('message')}`")
+
+    file_data = r.json()
+    sha = file_data["sha"]
+    current_content = base64.b64decode(file_data["content"]).decode('utf-8')
+
+    # Nếu người dùng nhập "ALL" -> Xóa sạch toàn bộ code cũ và ghi đè code mới
+    if old_code.upper() in ["ALL", "*", "CLEAR", "FULL"]:
+        updated_content = new_code
+    else:
+        if old_code not in current_content:
+            return await msg.edit(content="❌ Không tìm thấy đoạn code cũ cần thay thế trong file `bot.py`!")
+        updated_content = current_content.replace(old_code, new_code, 1)
+
+    # Commit lên GitHub
+    encoded_updated_content = base64.b64encode(updated_content.encode('utf-8')).decode('utf-8')
+    data = {
+        "message": f"🤖 Discord Bot: Tự động cập nhật code theo yêu cầu của {ctx.author.name}",
+        "content": encoded_updated_content,
+        "sha": sha
+    }
+
+    put_r = requests.put(url, headers=headers, json=data)
+    if put_r.status_code == 200:
+        await msg.edit(content="✅ **Đã commit code mới lên GitHub thành công!**\n🚀 Render sẽ tự động bắt đầu Build và Deploy bản cập nhật mới trong 1-2 phút.")
+    else:
+        await msg.edit(content=f"❌ Lỗi khi commit lên GitHub: `{put_r.json().get('message')}`")
 
 @bot.command(name="cmdhelp")
 @is_high_permission()
@@ -1100,11 +1154,14 @@ async def listdelete(ctx):
 @backup.error
 @restore.error
 @stats.error
+@replace_code.error
 async def command_permission_error(ctx, error):
-    if isinstance(error, commands.CheckFailure):
+    if isinstance(error, commands.NotOwner):
+        await ctx.send(f"❌ {ctx.author.mention}, chỉ Chủ sở hữu tài khoản Bot mới có quyền dùng lệnh này!", delete_after=10)
+    elif isinstance(error, commands.CheckFailure):
         await ctx.send(f"❌ {ctx.author.mention}, m có quyền dell đâu mà sài lol", delete_after=10)
     elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send(f"⚠️ Lỗi cú pháp! Gõ thiếu thông tin (vd: tag sai tên, thiếu kênh...).", delete_after=10)
+        await ctx.send(f"⚠️ Lỗi cú pháp! Gõ thiếu thông tin.", delete_after=10)
 
 keep_alive()
 token = os.environ.get("BOT_TOKEN")
