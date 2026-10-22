@@ -113,12 +113,11 @@ class SettingModal(discord.ui.Modal):
 # --- CLASS TẠO NÚT BẤM CHO SETTING ---
 class SettingView(discord.ui.View):
     def __init__(self, guild_id_str, original_author):
-        super().__init__(timeout=300) # Timeout 5 phút để dọn dẹp RAM
+        super().__init__(timeout=300)
         self.guild_id_str = guild_id_str
-        self.original_author = original_author # Lưu lại người gõ lệnh
+        self.original_author = original_author
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        # 1. Khóa UI: Chỉ người gõ lệnh mới được bấm nút
         if interaction.user != self.original_author:
             await interaction.response.send_message(
                 f"❌ Bảng điều khiển này đang được sử dụng bởi {self.original_author.mention}. Vui lòng tự gõ `!setting` để mở bảng của riêng mình!", 
@@ -126,7 +125,6 @@ class SettingView(discord.ui.View):
             )
             return False
             
-        # 2. Kiểm tra lại quyền đề phòng
         p = interaction.user.guild_permissions
         if not (p.administrator or p.manage_messages or p.kick_members or p.ban_members or p.manage_guild):
             await interaction.response.send_message("❌ Bạn cần có quyền Quản trị / Staff để dùng nút này!", ephemeral=True)
@@ -177,10 +175,15 @@ async def on_message(message):
     author_id = message.author.id
     mute_minutes = server_settings["mute_time"]
 
-    # 1. TÍNH NĂNG CHỐNG SPAM TIN NHẮN TOÀN SERVER (!nospam)
-    if server_settings.get("anti_spam", False) and not message.author.bot:
-        p = message.author.guild_permissions
-        if not (p.administrator or p.manage_messages or p.manage_guild):
+    # 1. TÍNH NĂNG CHỐNG SPAM (HỖ TRỢ NHẬN DIỆN NUKE BOT/WEBHOOK)
+    if server_settings.get("anti_spam", False):
+        is_staff = False
+        if isinstance(message.author, discord.Member):
+            p = message.author.guild_permissions
+            if p.administrator or p.manage_messages or p.manage_guild:
+                is_staff = True
+
+        if not is_staff:
             tracker_key = (guild_id_str, author_id)
             now = datetime.now()
             
@@ -193,7 +196,8 @@ async def on_message(message):
                     msg_spam_tracker[tracker_key]["count"] += 1
 
             if msg_spam_tracker[tracker_key]["count"] >= server_settings["msg_limit"]:
-                if isinstance(message.author, discord.Member):
+                # Nếu là Thành Viên bình thường trong server
+                if isinstance(message.author, discord.Member) and not message.webhook_id:
                     try:
                         await message.author.timeout(timedelta(minutes=mute_minutes), reason="Spam tin nhắn quá nhanh")
                         await message.channel.send(
@@ -202,9 +206,30 @@ async def on_message(message):
                         )
                     except discord.Forbidden:
                         pass
+                # Nếu là WEBHOOK hoặc BOT LẠ NGOÀI SERVER -> Auto ban vào danh sách đen & Xóa chat
+                else:
+                    target_name = message.author.name.lower()
+                    if target_name not in auto_delete_dict[guild_id_str]["names"]:
+                        auto_delete_dict[guild_id_str]["names"].append(target_name)
+                        save_data(auto_delete_dict)
+                        
+                        try:
+                            # Quét và xóa ngược lại hàng loạt tin nhắn nó vừa spam
+                            await message.channel.purge(
+                                limit=server_settings["msg_limit"] + 5, 
+                                check=lambda m: m.author.id == author_id or (m.webhook_id and m.webhook_id == message.webhook_id)
+                            )
+                        except discord.Forbidden:
+                            pass
+                            
+                        await message.channel.send(
+                            f"🛡️ **Anti-Nuke:** Phát hiện Webhook/Bot lạ (`{message.author.name}`) đang spam! Đã tự động dọn dẹp và khóa vào Danh Sách Đen.",
+                            delete_after=15
+                        )
+
                 msg_spam_tracker[tracker_key] = {"count": 0, "start_time": now}
 
-    # 2. TÍNH NĂNG TỰ ĐỘNG XÓA VÀ CHỐNG GHOST PING
+    # 2. TÍNH NĂNG TỰ ĐỘNG XÓA VÀ CHỐNG GHOST PING CỦA DANH SÁCH ĐEN
     blacklisted_ids = server_data["ids"]
     blacklisted_names = server_data["names"]
     is_blacklisted = False
@@ -271,7 +296,6 @@ async def setting(ctx):
         auto_delete_dict[guild_id_str]["settings"]["mute_time"] = 1
     
     embed = get_setting_embed(guild_id_str)
-    # Truyền ctx.author (người gọi lệnh) vào View để khóa UI
     view = SettingView(guild_id_str, ctx.author)
     await ctx.send(embed=embed, view=view)
 
@@ -290,9 +314,9 @@ async def nospam(ctx):
     mute_time = auto_delete_dict[guild_id_str]["settings"]["mute_time"]
     
     if not current_status:
-        await ctx.send(f"✅ Đã **BẬT 🟢** chế độ chống Spam tin nhắn toàn server.\n*(Ai không có quyền Staff nhắn quá {limit} tin trong 10 giây sẽ bị MUTE {mute_time} phút)*")
+        await ctx.send(f"✅ Đã **BẬT 🟢** chế độ chống Spam.\n*(Nhắn quá {limit} tin trong 10 giây sẽ bị MUTE {mute_time} phút)*")
     else:
-        await ctx.send("✅ Đã **TẮT 🔴** chế độ chống Spam tin nhắn toàn server.")
+        await ctx.send("✅ Đã **TẮT 🔴** chế độ chống Spam.")
 
 @bot.command(name="autodelete")
 @is_high_permission()
