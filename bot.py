@@ -154,7 +154,7 @@ def get_setting_embed(guild_id_str):
     )
     embed.add_field(
         name="3. Chống Spam Tin nhắn (!nospam)", 
-        value=f"• Trạng thái tính năng: **{status}**\n• Mốc 1 (Cảnh cáo): **{settings.get('warn_limit', 5)} tin nhắn** / 10s\n• Mốc 2 (Bị Mute): **{settings['msg_limit']} tin nhắn** / 10s\n• Chống copy-paste: **Xóa từ lần trùng thứ 5 (Staff chỉ bị xóa)**", 
+        value=f"• Trạng thái tính năng: **{status}**\n• Mức 1 (Cảnh cáo): **{settings.get('warn_limit', 5)} tin nhắn** / 10s\n• Mức 2 (Bị Mute): **{settings['msg_limit']} tin nhắn** / 10s\n• Chống copy-paste: **Xóa từ lần trùng thứ 5 (Staff chỉ bị xóa)**", 
         inline=False
     )
     embed.add_field(
@@ -196,9 +196,9 @@ class SettingModal(discord.ui.Modal):
             current_settings = auto_delete_dict[guild_id_str]["settings"]
             
             if self.setting_key == "warn_limit" and new_val >= current_settings.get("msg_limit", 10):
-                return await interaction.response.send_message("❌ Lỗi: Mốc CẢNH CÁO phải NHỎ HƠN Mốc PHẠT (Mute)!", ephemeral=True)
+                return await interaction.response.send_message("❌ Lỗi: Mức CẢNH CÁO phải NHỎ HƠN Mức PHẠT (Mute)!", ephemeral=True)
             if self.setting_key == "msg_limit" and new_val <= current_settings.get("warn_limit", 5):
-                return await interaction.response.send_message("❌ Lỗi: Mốc PHẠT (Mute) phải LỚN HƠN Mốc CẢNH CÁO!", ephemeral=True)
+                return await interaction.response.send_message("❌ Lỗi: Mức PHẠT (Mute) phải LỚN HƠN Mức CẢNH CÁO!", ephemeral=True)
 
             auto_delete_dict[guild_id_str]["settings"][self.setting_key] = new_val
             
@@ -241,17 +241,17 @@ class SettingView(discord.ui.View):
     async def edit_mute(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(SettingModal("mute_time", "Sửa Thời Gian Mute", "VD: 30s, 1 phút 20 giây", self))
 
-    @discord.ui.button(label="Mốc Tag", style=discord.ButtonStyle.primary, emoji="🏷️")
+    @discord.ui.button(label="Mức Tag", style=discord.ButtonStyle.primary, emoji="🏷️")
     async def edit_tag(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(SettingModal("tag_limit", "Giới hạn Spam Tag (Lần)", "Ví dụ: 5", self))
 
-    @discord.ui.button(label="Mốc Cảnh Cáo", style=discord.ButtonStyle.primary, emoji="⚠️")
+    @discord.ui.button(label="Mức Cảnh Cáo", style=discord.ButtonStyle.primary, emoji="⚠️")
     async def edit_warn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(SettingModal("warn_limit", "Mốc Nhắc Nhở Spam (trong 10s)", "Ví dụ: 5", self))
+        await interaction.response.send_modal(SettingModal("warn_limit", "Mức Nhắc Nhở Spam (trong 10s)", "Ví dụ: 5", self))
 
-    @discord.ui.button(label="Mốc Phạt (Mute)", style=discord.ButtonStyle.danger, emoji="💬")
+    @discord.ui.button(label="Mức Phạt (Mute)", style=discord.ButtonStyle.danger, emoji="💬")
     async def edit_msg(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(SettingModal("msg_limit", "Mốc Phạt Mute/Nuke (trong 10s)", "Ví dụ: 10", self))
+        await interaction.response.send_modal(SettingModal("msg_limit", "Mức Phạt Mute/Nuke (trong 10s)", "Ví dụ: 10", self))
         
     @discord.ui.button(label="Cài Kênh Log", style=discord.ButtonStyle.secondary, emoji="📓")
     async def edit_log(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -315,7 +315,7 @@ async def on_message(message):
         if current_msg_count == warn_limit and not is_staff_or_bot:
             if isinstance(message.author, discord.Member) and not message.webhook_id:
                 await message.channel.send(f"⚠️ {message.author.mention} **CẢNH CÁO:** Bạn đang gửi tin nhắn quá nhanh!", delete_after=10)
-                await send_mod_log(message.guild, "⚠️ Phát hiện tốc độ cao", f"**Đối tượng:** {message.author.mention}\n**Hành động:** Đã nhắc nhở\n**Lý do:** Đạt mốc cảnh cáo ({warn_limit} tin/10s)", discord.Color.yellow())
+                await send_mod_log(message.guild, "⚠️ Phát hiện tốc độ cao", f"**Đối tượng:** {message.author.mention}\n**Hành động:** Đã nhắc nhở\n**Lý do:** Đạt mức cảnh cáo ({warn_limit} tin/10s)", discord.Color.yellow())
 
         elif current_msg_count >= msg_limit:
             if is_staff_or_bot:
@@ -328,7 +328,7 @@ async def on_message(message):
                     try:
                         await message.author.timeout(timedelta(seconds=mute_seconds), reason="Phớt lờ cảnh cáo Spam")
                         await message.channel.send(f"🚫 {message.author.mention} đã bị **MUTE {mute_time_raw}** do tiếp tục spam sau khi bị cảnh cáo!", delete_after=15)
-                        await send_mod_log(message.guild, "🚫 Phạt Spam Nhanh", f"**Đối tượng:** {message.author.mention}\n**Hành động:** Mute {mute_time_raw}\n**Lý do:** Vượt mốc {msg_limit} tin/10s", discord.Color.orange())
+                        await send_mod_log(message.guild, "🚫 Phạt Spam Nhanh", f"**Đối tượng:** {message.author.mention}\n**Hành động:** Mute {mute_time_raw}\n**Lý do:** spam chat {msg_limit} tin/10s", discord.Color.orange())
                     except discord.Forbidden:
                         pass
                 else:
@@ -448,6 +448,44 @@ async def on_message(message):
     await bot.process_commands(message)
 
 # --- 3. LỆNH ĐIỀU KHIỂN ---
+
+@bot.command(name="cmdhelp")
+@is_high_permission()
+async def cmdhelp(ctx):
+    embed = discord.Embed(
+        title="📚 Hướng Dẫn Sử Dụng Tính Năng Chống Spam",
+        description="Dưới đây là các lệnh để thiết lập hệ thống bảo vệ Server:",
+        color=discord.Color.green()
+    )
+    embed.set_image(url="https://media1.tenor.com/m/5GqH_Z_4pToAAAAd/hack-hacker.gif")
+    
+    embed.add_field(
+        name="🛠️ `!setting`", 
+        value="Mở bảng điều khiển chính để chỉnh sửa các mốc giới hạn, thời gian mute và bật/tắt tính năng chống spam.", 
+        inline=False
+    )
+    embed.add_field(
+        name="🛡️ `!nospam`", 
+        value="Lệnh bật/tắt nhanh chế độ chống spam mà không cần mở bảng cài đặt.", 
+        inline=False
+    )
+    embed.add_field(
+        name="📓 `!setlogg #kênh` / `!setlogg`", 
+        value="Thiết lập kênh để nhận thông báo (Mod Logs) mỗi khi bot xử lý vi phạm. Gõ lệnh không kèm kênh để tắt.", 
+        inline=False
+    )
+    embed.add_field(
+        name="🚨 `!lockdown`", 
+        value="Khóa/Mở khóa khẩn cấp Server (Tắt/Bật quyền gửi tin nhắn của `@everyone`). Dùng khi bị raid.", 
+        inline=False
+    )
+    embed.add_field(
+        name="👻 Tự động xóa & Chống Ghost Ping", 
+        value="• `!autodelete <ID/Tên>`: Đưa người dùng vào danh sách đen (tự xóa tin nhắn, cảnh cáo ghost ping).\n• `!stopdelete <ID/Tên>`: Xóa khỏi danh sách đen.\n• `!listdelete`: Xem danh sách đen hiện tại.", 
+        inline=False
+    )
+    embed.set_footer(text="Hệ thống Vệ sĩ tự động • Chỉ dành cho Staff/Admin")
+    await ctx.send(embed=embed)
 
 @bot.command(name="setlogg")
 @is_high_permission()
@@ -667,6 +705,7 @@ async def listdelete(ctx):
 @lockdown.error
 @setting.error
 @nospam.error
+@cmdhelp.error
 async def command_permission_error(ctx, error):
     if isinstance(error, commands.CheckFailure):
         await ctx.send(f"❌ {ctx.author.mention}, bạn cần quyền Quản trị / Staff!", delete_after=10)
