@@ -321,6 +321,29 @@ class SettingView(discord.ui.View):
         button.style = discord.ButtonStyle.danger if current_status else discord.ButtonStyle.success
         await interaction.response.edit_message(embed=get_setting_embed(self.guild_id_str), view=self)
 
+    @discord.ui.button(label="Đóng UI", style=discord.ButtonStyle.secondary, emoji="❌")
+    async def close_ui(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await safe_delete(interaction.message)
+
+# --- CLASS TẠO NÚT BẤM CHO STATS ---
+class StatsView(discord.ui.View):
+    def __init__(self, original_author):
+        super().__init__(timeout=180)
+        self.original_author = original_author
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user != self.original_author:
+            await interaction.response.send_message(
+                f"❌ Bảng này được gọi bởi {self.original_author.mention}.", 
+                ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Đóng UI", style=discord.ButtonStyle.danger, emoji="❌")
+    async def close_ui(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await safe_delete(interaction.message)
+
 @bot.event
 async def on_ready():
     print(f'Bot {bot.user} đã Online và tải xong dữ liệu!')
@@ -361,10 +384,7 @@ async def on_message(message):
         if message.author.bot or message.webhook_id:
             is_fake = True
             
-            # Tra cứu xem ID người gửi có tương ứng với 1 Member hợp lệ trong Server không
             author_member = message.guild.get_member(message.author.id)
-            
-            # Nếu là Member thật VÀ đã được gán ít nhất 1 Role (ngoài role @everyone mặc định) -> Hợp lệ!
             if author_member and len(author_member.roles) > 1:
                 is_fake = False
 
@@ -394,7 +414,7 @@ async def on_message(message):
                     )
                 return 
 
-    # KIỂM TRA QUYỀN (LOẠI TRỪ WEBHOOK/BOT MA KHỎI QUYỀN STAFF)
+    # KIỂM TRA QUYỀN
     is_staff_or_bot = False
     author_member = message.guild.get_member(message.author.id)
     if author_member:
@@ -646,7 +666,9 @@ async def stats(ctx):
     )
     
     embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.avatar.url if ctx.author.avatar else ctx.author.default_avatar.url)
-    await ctx.send(embed=embed)
+    
+    view = StatsView(ctx.author)
+    await ctx.send(embed=embed, view=view)
 
 @bot.command(name="backup")
 @is_high_permission()
@@ -734,7 +756,6 @@ async def backup(ctx):
     json_bytes = json.dumps(backup_data, indent=4, ensure_ascii=False).encode('utf-8')
     file = discord.File(io.BytesIO(json_bytes), filename=f"backup_{guild.id}.json")
 
-    # GỬI FILE VÀO DM CỦA ADMIN
     try:
         await ctx.author.send(f"📂 Đây là file backup cấu trúc cho Server **{guild.name}** của bạn:", file=file)
         await msg.edit(content=f"✅ **Đã sao lưu thành công!** Dữ liệu đã lưu lên Cloud. \n📥 File backup `.json` đã được gửi vào **Tin nhắn riêng (DM)** của bạn!")
