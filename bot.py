@@ -46,8 +46,11 @@ def save_data(data):
         json.dump(data, f, indent=4)
 
 auto_delete_dict = load_data()
+
+# Các bộ đếm Anti-Spam
 tag_spam_tracker = {}
 msg_spam_tracker = {} 
+slow_spam_tracker = {} # Bộ đếm cho Spam Từ Từ (Trùng nội dung)
 
 # HÀM KIỂM TRA QUYỀN CAO
 def is_high_permission():
@@ -65,9 +68,8 @@ def parse_time_to_seconds(time_str):
     
     time_str = str(time_str).lower().replace(" ", "")
     if time_str.isdigit():
-        return int(time_str) * 60 # Mặc định là phút nếu chỉ ghi số
+        return int(time_str) * 60 
         
-    # Dịch các từ tiếng Việt sang mã chuẩn
     time_str = time_str.replace("phút", "p").replace("phut", "p")
     time_str = time_str.replace("giây", "s").replace("giay", "s")
     time_str = time_str.replace("giờ", "h").replace("gio", "h")
@@ -106,7 +108,7 @@ def get_setting_embed(guild_id_str):
     )
     embed.add_field(
         name="3. Chống Spam Tin nhắn (!nospam)", 
-        value=f"• Trạng thái tính năng: **{status}**\n• Giới hạn spam tin nhắn: **{settings['msg_limit']} tin nhắn** / 10 giây", 
+        value=f"• Trạng thái tính năng: **{status}**\n• Mốc 1 (Cảnh cáo): **{settings.get('warn_limit', 5)} tin nhắn** / 10s\n• Mốc 2 (Bị Mute): **{settings['msg_limit']} tin nhắn** / 10s\n• Chống copy-paste: **Xóa tin nhắn từ lần trùng thứ 5**", 
         inline=False
     )
     embed.set_footer(text="Bấm vào các nút bên dưới để tùy chỉnh")
@@ -133,12 +135,21 @@ class SettingModal(discord.ui.Modal):
         
         if self.setting_key == "mute_time":
             if parse_time_to_seconds(val) <= 0:
-                return await interaction.response.send_message("❌ Định dạng không hợp lệ! Vui lòng dùng số kèm s, p, h (VD: 30s, 1 phút 20 giây).", ephemeral=True)
+                return await interaction.response.send_message("❌ Định dạng không hợp lệ! Vui lòng dùng số kèm s, p, h.", ephemeral=True)
             auto_delete_dict[guild_id_str]["settings"][self.setting_key] = val.lower().strip()
         else:
             if not val.isdigit() or int(val) < 1:
                 return await interaction.response.send_message("❌ Vui lòng nhập một số hợp lệ lớn hơn 0!", ephemeral=True)
-            auto_delete_dict[guild_id_str]["settings"][self.setting_key] = int(val)
+            
+            new_val = int(val)
+            current_settings = auto_delete_dict[guild_id_str]["settings"]
+            
+            if self.setting_key == "warn_limit" and new_val >= current_settings.get("msg_limit", 10):
+                return await interaction.response.send_message("❌ Lỗi: Mốc CẢNH CÁO phải NHỎ HƠN Mốc PHẠT (Mute)!", ephemeral=True)
+            if self.setting_key == "msg_limit" and new_val <= current_settings.get("warn_limit", 5):
+                return await interaction.response.send_message("❌ Lỗi: Mốc PHẠT (Mute) phải LỚN HƠN Mốc CẢNH CÁO!", ephemeral=True)
+
+            auto_delete_dict[guild_id_str]["settings"][self.setting_key] = new_val
             
         save_data(auto_delete_dict)
         new_embed = get_setting_embed(guild_id_str)
@@ -166,7 +177,7 @@ class SettingView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="Bật/Tắt Anti-Spam", style=discord.ButtonStyle.success, emoji="🛡️")
+    @discord.ui.button(label="Bật/Tắt", style=discord.ButtonStyle.success, emoji="🛡️")
     async def toggle_spam(self, interaction: discord.Interaction, button: discord.ui.Button):
         current_status = auto_delete_dict[self.guild_id_str]["settings"].get("anti_spam", False)
         auto_delete_dict[self.guild_id_str]["settings"]["anti_spam"] = not current_status
@@ -175,17 +186,21 @@ class SettingView(discord.ui.View):
         button.style = discord.ButtonStyle.danger if current_status else discord.ButtonStyle.success
         await interaction.response.edit_message(embed=get_setting_embed(self.guild_id_str), view=self)
 
-    @discord.ui.button(label="Sửa TG Mute", style=discord.ButtonStyle.primary, emoji="⏱️")
+    @discord.ui.button(label="TG Mute", style=discord.ButtonStyle.primary, emoji="⏱️")
     async def edit_mute(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(SettingModal("mute_time", "Sửa Thời Gian Mute", "VD: 30s, 1 phút 20 giây, 1h", self))
+        await interaction.response.send_modal(SettingModal("mute_time", "Sửa Thời Gian Mute", "VD: 30s, 1 phút 20 giây", self))
 
-    @discord.ui.button(label="Sửa Mốc Tag", style=discord.ButtonStyle.primary, emoji="🏷️")
+    @discord.ui.button(label="Mốc Tag", style=discord.ButtonStyle.primary, emoji="🏷️")
     async def edit_tag(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(SettingModal("tag_limit", "Giới hạn Tag (Lần)", "Ví dụ: 5", self))
+        await interaction.response.send_modal(SettingModal("tag_limit", "Giới hạn Spam Tag (Lần)", "Ví dụ: 5", self))
 
-    @discord.ui.button(label="Sửa Mốc Spam", style=discord.ButtonStyle.primary, emoji="💬")
+    @discord.ui.button(label="Mốc Cảnh Cáo", style=discord.ButtonStyle.primary, emoji="⚠️")
+    async def edit_warn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(SettingModal("warn_limit", "Mốc Nhắc Nhở Spam (trong 10s)", "Ví dụ: 5", self))
+
+    @discord.ui.button(label="Mốc Phạt (Mute)", style=discord.ButtonStyle.danger, emoji="💬")
     async def edit_msg(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(SettingModal("msg_limit", "Giới hạn Tin nhắn (trong 10s)", "Ví dụ: 5", self))
+        await interaction.response.send_modal(SettingModal("msg_limit", "Mốc Phạt Mute/Nuke (trong 10s)", "Ví dụ: 10", self))
 
 @bot.event
 async def on_ready():
@@ -199,11 +214,14 @@ async def on_message(message):
     guild_id_str = str(message.guild.id)
     
     if guild_id_str not in auto_delete_dict:
-        auto_delete_dict[guild_id_str] = {"ids": [], "names": [], "settings": {"tag_limit": 5, "msg_limit": 5, "mute_time": "1p", "anti_spam": False}}
+        auto_delete_dict[guild_id_str] = {"ids": [], "names": [], "settings": {"tag_limit": 5, "warn_limit": 5, "msg_limit": 10, "mute_time": "1p", "anti_spam": False}}
     elif "settings" not in auto_delete_dict[guild_id_str]:
-        auto_delete_dict[guild_id_str]["settings"] = {"tag_limit": 5, "msg_limit": 5, "mute_time": "1p", "anti_spam": False}
-    elif "mute_time" not in auto_delete_dict[guild_id_str]["settings"]:
-        auto_delete_dict[guild_id_str]["settings"]["mute_time"] = "1p"
+        auto_delete_dict[guild_id_str]["settings"] = {"tag_limit": 5, "warn_limit": 5, "msg_limit": 10, "mute_time": "1p", "anti_spam": False}
+    else:
+        if "warn_limit" not in auto_delete_dict[guild_id_str]["settings"]:
+            auto_delete_dict[guild_id_str]["settings"]["warn_limit"] = 5
+        if "msg_limit" not in auto_delete_dict[guild_id_str]["settings"] or auto_delete_dict[guild_id_str]["settings"]["msg_limit"] <= auto_delete_dict[guild_id_str]["settings"]["warn_limit"]:
+            auto_delete_dict[guild_id_str]["settings"]["msg_limit"] = auto_delete_dict[guild_id_str]["settings"]["warn_limit"] + 5
 
     server_data = auto_delete_dict[guild_id_str]
     server_settings = server_data["settings"]
@@ -213,7 +231,7 @@ async def on_message(message):
     mute_seconds = parse_time_to_seconds(mute_time_raw)
     if mute_seconds <= 0: mute_seconds = 60
 
-    # 1. TÍNH NĂNG CHỐNG SPAM (NHẬN DIỆN NUKE BOT/WEBHOOK)
+    # 1. HỆ THỐNG CHỐNG SPAM TOÀN DIỆN
     if server_settings.get("anti_spam", False):
         is_staff = False
         if isinstance(message.author, discord.Member):
@@ -225,6 +243,7 @@ async def on_message(message):
             tracker_key = (guild_id_str, author_id)
             now = datetime.now()
             
+            # --- 1A. KIỂM TRA SPAM NHANH (FAST SPAM) ---
             if tracker_key not in msg_spam_tracker:
                 msg_spam_tracker[tracker_key] = {"count": 1, "start_time": now}
             else:
@@ -233,14 +252,19 @@ async def on_message(message):
                 else:
                     msg_spam_tracker[tracker_key]["count"] += 1
 
-            if msg_spam_tracker[tracker_key]["count"] >= server_settings["msg_limit"]:
+            current_msg_count = msg_spam_tracker[tracker_key]["count"]
+            warn_limit = server_settings["warn_limit"]
+            msg_limit = server_settings["msg_limit"]
+
+            if current_msg_count == warn_limit:
+                if isinstance(message.author, discord.Member) and not message.webhook_id:
+                    await message.channel.send(f"⚠️ {message.author.mention} **CẢNH CÁO:** Bạn đang gửi tin nhắn quá nhanh!", delete_after=10)
+
+            elif current_msg_count >= msg_limit:
                 if isinstance(message.author, discord.Member) and not message.webhook_id:
                     try:
-                        await message.author.timeout(timedelta(seconds=mute_seconds), reason="Spam tin nhắn quá nhanh")
-                        await message.channel.send(
-                            f"🚫 {message.author.mention} đã bị **MUTE {mute_time_raw}** do spam quá {server_settings['msg_limit']} tin nhắn trong 10 giây!",
-                            delete_after=15
-                        )
+                        await message.author.timeout(timedelta(seconds=mute_seconds), reason="Phớt lờ cảnh cáo Spam")
+                        await message.channel.send(f"🚫 {message.author.mention} đã bị **MUTE {mute_time_raw}** do tiếp tục spam sau khi bị cảnh cáo!", delete_after=15)
                     except discord.Forbidden:
                         pass
                 else:
@@ -248,21 +272,62 @@ async def on_message(message):
                     if target_name not in auto_delete_dict[guild_id_str]["names"]:
                         auto_delete_dict[guild_id_str]["names"].append(target_name)
                         save_data(auto_delete_dict)
-                        
                         try:
-                            await message.channel.purge(
-                                limit=server_settings["msg_limit"] + 5, 
-                                check=lambda m: m.author.id == author_id or (m.webhook_id and m.webhook_id == message.webhook_id)
-                            )
+                            await message.channel.purge(limit=msg_limit + 5, check=lambda m: m.author.id == author_id or (m.webhook_id and m.webhook_id == message.webhook_id))
                         except discord.Forbidden:
                             pass
-                            
-                        await message.channel.send(
-                            f"🛡️ **Anti-Nuke:** Phát hiện Webhook/Bot lạ (`{message.author.name}`) đang spam! Đã dọn dẹp và khóa vào Danh Sách Đen.",
-                            delete_after=15
-                        )
-
+                        await message.channel.send(f"🛡️ **Anti-Nuke:** Phát hiện Webhook lạ (`{message.author.name}`) đang spam phá hoại! Đã khóa vào Danh Sách Đen.", delete_after=15)
                 msg_spam_tracker[tracker_key] = {"count": 0, "start_time": now}
+
+
+            # --- 1B. KIỂM TRA SPAM TỪ TỪ VÀ TRÙNG LẶP NỘI DUNG ---
+            msg_content = message.content.strip().lower()
+            if msg_content: 
+                if tracker_key in slow_spam_tracker:
+                    tracker = slow_spam_tracker[tracker_key]
+                    # Nếu tin nhắn y hệt tin nhắn trước đó (trong vòng 60s)
+                    if tracker["content"] == msg_content and (now - tracker["last_time"]).total_seconds() < 60:
+                        tracker["count"] += 1
+                        
+                        # Chỉ bắt đầu xóa từ lần trùng lặp thứ 5 (tức là 5 tin nhắn y hệt nhau)
+                        if tracker["count"] >= 5:
+                            try:
+                                await message.delete() 
+                            except discord.Forbidden:
+                                pass
+                            
+                            if tracker["first_duplicate_time"] is None:
+                                tracker["first_duplicate_time"] = now # Bắt đầu đếm giờ 20s kể từ lúc bị xóa tin nhắn đầu tiên
+                            else:
+                                # Nếu quá 20s kể từ lúc bắt đầu bị xóa mà vẫn gửi đúng câu đó
+                                if (now - tracker["first_duplicate_time"]).total_seconds() >= 20:
+                                    if isinstance(message.author, discord.Member) and not message.webhook_id:
+                                        try:
+                                            await message.author.timeout(timedelta(seconds=mute_seconds), reason="Spam lặp một nội dung quá lâu")
+                                            await message.channel.send(f"🚫 {message.author.mention} đã bị **MUTE {mute_time_raw}** do cố tình spam lặp đi lặp lại cùng một nội dung liên tục!", delete_after=15)
+                                        except discord.Forbidden:
+                                            pass
+                                    else:
+                                        target_name = message.author.name.lower()
+                                        if target_name not in auto_delete_dict[guild_id_str]["names"]:
+                                            auto_delete_dict[guild_id_str]["names"].append(target_name)
+                                            save_data(auto_delete_dict)
+                                            await message.channel.send(f"🛡️ **Anti-Nuke:** Khóa Webhook lạ (`{message.author.name}`) do spam lặp chữ!", delete_after=15)
+                                    
+                                    # Đã phạt xong thì reset bộ đếm
+                                    slow_spam_tracker[tracker_key] = {"content": "", "last_time": now, "count": 0, "first_duplicate_time": None}
+                                    return 
+                            
+                            tracker["last_time"] = now
+                            return # Bị xóa thì dừng, không cho bot check các lệnh khác
+                        else:
+                            # Nếu dưới 5 tin, chưa bị xóa, chỉ cập nhật thời gian
+                            tracker["last_time"] = now
+                    else:
+                        slow_spam_tracker[tracker_key] = {"content": msg_content, "last_time": now, "count": 1, "first_duplicate_time": None}
+                else:
+                    slow_spam_tracker[tracker_key] = {"content": msg_content, "last_time": now, "count": 1, "first_duplicate_time": None}
+
 
     # 2. TÍNH NĂNG TỰ ĐỘNG XÓA VÀ CHỐNG GHOST PING CỦA DANH SÁCH ĐEN
     blacklisted_ids = server_data["ids"]
@@ -326,9 +391,7 @@ async def on_message(message):
 async def setting(ctx):
     guild_id_str = str(ctx.guild.id)
     if guild_id_str not in auto_delete_dict:
-        auto_delete_dict[guild_id_str] = {"ids": [], "names": [], "settings": {"tag_limit": 5, "msg_limit": 5, "mute_time": "1p", "anti_spam": False}}
-    elif "mute_time" not in auto_delete_dict[guild_id_str]["settings"]:
-        auto_delete_dict[guild_id_str]["settings"]["mute_time"] = "1p"
+        auto_delete_dict[guild_id_str] = {"ids": [], "names": [], "settings": {"tag_limit": 5, "warn_limit": 5, "msg_limit": 10, "mute_time": "1p", "anti_spam": False}}
     
     embed = get_setting_embed(guild_id_str)
     view = SettingView(guild_id_str, ctx.author)
@@ -339,7 +402,7 @@ async def setting(ctx):
 async def nospam(ctx):
     guild_id_str = str(ctx.guild.id)
     if guild_id_str not in auto_delete_dict:
-        auto_delete_dict[guild_id_str] = {"ids": [], "names": [], "settings": {"tag_limit": 5, "msg_limit": 5, "mute_time": "1p", "anti_spam": False}}
+        auto_delete_dict[guild_id_str] = {"ids": [], "names": [], "settings": {"tag_limit": 5, "warn_limit": 5, "msg_limit": 10, "mute_time": "1p", "anti_spam": False}}
     
     current_status = auto_delete_dict[guild_id_str]["settings"].get("anti_spam", False)
     auto_delete_dict[guild_id_str]["settings"]["anti_spam"] = not current_status
@@ -359,7 +422,7 @@ async def autodelete(ctx, *, target: str):
     clean_target = target.strip("<@!>").strip()
     guild_id_str = str(ctx.guild.id)
     if guild_id_str not in auto_delete_dict:
-        auto_delete_dict[guild_id_str] = {"ids": [], "names": [], "settings": {"tag_limit": 5, "msg_limit": 5, "mute_time": "1p", "anti_spam": False}}
+        auto_delete_dict[guild_id_str] = {"ids": [], "names": [], "settings": {"tag_limit": 5, "warn_limit": 5, "msg_limit": 10, "mute_time": "1p", "anti_spam": False}}
 
     if clean_target.isdigit():
         target_id = int(clean_target)
