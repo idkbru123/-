@@ -47,7 +47,12 @@ def load_data():
         )
         result = r.json().get("result")
         if result:
-            return json.loads(result)
+            parsed = json.loads(result)
+            # Phòng trường hợp dữ liệu cũ bị lưu lệch 2 lớp JSON (lỗi phiên bản trước)
+            if isinstance(parsed, str):
+                parsed = json.loads(parsed)
+            if isinstance(parsed, dict):
+                return parsed
     except Exception as e:
         print(f"Lỗi khi load data từ Upstash: {e}")
     return {}
@@ -58,7 +63,10 @@ def save_data(data):
     try:
         requests.post(
             f"{UPSTASH_URL}/set/{REDIS_KEY}",
-            headers={"Authorization": f"Bearer {UPSTASH_TOKEN}"},
+            headers={
+                "Authorization": f"Bearer {UPSTASH_TOKEN}",
+                "Content-Type": "application/json"
+            },
             data=json.dumps(json.dumps(data)),
             timeout=10
         )
