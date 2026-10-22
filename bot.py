@@ -12,6 +12,8 @@ import psutil
 from datetime import datetime, timedelta
 import io
 import base64
+import subprocess
+import sys
 
 # --- 1. WEB SERVER ẢO GIỮ BOT ONLINE TRÊN RENDER ---
 app = Flask(__name__)
@@ -578,7 +580,7 @@ async def on_message(message):
 
 # --- 3. LỆNH ĐIỀU KHIỂN ---
 
-# LỆNH TỰ ĐỘNG CHỈNH SỬA CODE QUA GITHUB API (CHỈ CHỦ BOT MỚI DÙNG ĐƯỢC)
+# LỆNH TỰ ĐỘNG CHỈNH SỬA CODE QUA GITHUB API (KIỂM TRA CÚ PHÁP + DRY-RUN 5S)
 @bot.command(name="replacecode")
 @commands.is_owner()
 async def replace_code(ctx, *, args: str):
@@ -592,7 +594,7 @@ async def replace_code(ctx, *, args: str):
     old_code = old_code.strip()
     new_code = new_code.strip()
 
-    msg = await ctx.send("🔄 Đang kết nối GitHub để cập nhật file `bot.py`...")
+    msg = await ctx.send("🔄 Đang lấy dữ liệu file `bot.py` từ GitHub...")
 
     headers = {
         "Authorization": f"token {GITHUB_TOKEN}",
@@ -600,7 +602,6 @@ async def replace_code(ctx, *, args: str):
     }
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/bot.py"
 
-    # Lấy nội dung file hiện tại từ GitHub
     r = requests.get(url, headers=headers)
     if r.status_code != 200:
         return await msg.edit(content=f"❌ Lỗi khi tải file từ GitHub: `{r.json().get('message')}`")
@@ -617,17 +618,61 @@ async def replace_code(ctx, *, args: str):
             return await msg.edit(content="❌ Không tìm thấy đoạn code cũ cần thay thế trong file `bot.py`!")
         updated_content = current_content.replace(old_code, new_code, 1)
 
-    # Commit lên GitHub
+    # 1. KIỂM TRA CÚ PHÁP TĨNH (SYNTAX CHECK)
+    try:
+        compile(updated_content, filename='bot.py', mode='exec')
+    except SyntaxError as e:
+        error_line = e.text.strip() if e.text else 'Không xác định'
+        return await msg.edit(content=f"❌ **LỖI CÚ PHÁP (SYNTAX ERROR)!**\nCode bị lỗi nên bot **ĐÃ CHẶN LẠI**, không commit lên GitHub.\n\n• **Chi tiết lỗi:** `{e.msg}`\n• **Dòng lỗi:** `{e.lineno}`\n• **Đoạn mã lỗi:** `{error_line}`")
+
+    # 2. CHẠY THỬ NGẦM (DRY-RUN) TRONG 5 GIÂY ĐỂ BẮT LỖI RUNTIME (ImportError, NameError,...)
+    await msg.edit(content="🧪 **Đang chạy thử code mới trong môi trường cách ly (5 giây)...**")
+    
+    test_filename = "temp_test_bot.py"
+    with open(test_filename, "w", encoding="utf-8") as f:
+        f.write(updated_content)
+
+    try:
+        # Chạy file tạm ở tiến trình riêng
+        process = subprocess.Popen(
+            [sys.executable, test_filename],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        # Chờ 5 giây xem tiến trình có bị sập giữa chừng không
+        await asyncio.sleep(5)
+        
+        # Kiểm tra xem tiến trình có bị sập do lỗi runtime không
+        if process.poll() is not None:
+            _, stderr = process.communicate()
+            if os.path.exists(test_filename): os.remove(test_filename)
+            return await msg.edit(content=f"❌ **LỖI RUNTIME/KHỞI CHẠY (BOT SẬP KHI CHẠY THỬ)!**\nĐã chặn commit để bảo vệ Bot.\n\n```text\n{stderr[:1500]}\n```")
+        else:
+            # Tiến trình vẫn sống tốt sau 5s -> Tắt tiến trình chạy thử
+            process.terminate()
+            process.wait()
+
+    except Exception as e:
+        if os.path.exists(test_filename): os.remove(test_filename)
+        return await msg.edit(content=f"❌ **Lỗi khi thực thi test:** `{e}`")
+
+    if os.path.exists(test_filename):
+        os.remove(test_filename)
+
+    # 3. MỌI THỨ AN TOÀN -> COMMIT LÊN GITHUB
+    await msg.edit(content="✅ **Code chạy thử an toàn!** Đang tiến hành commit lên GitHub...")
     encoded_updated_content = base64.b64encode(updated_content.encode('utf-8')).decode('utf-8')
     data = {
-        "message": f"🤖 Discord Bot: Tự động cập nhật code theo yêu cầu của {ctx.author.name}",
+        "message": f"🤖 Discord Bot: Cập nhật code an toàn từ {ctx.author.name}",
         "content": encoded_updated_content,
         "sha": sha
     }
 
     put_r = requests.put(url, headers=headers, json=data)
     if put_r.status_code == 200:
-        await msg.edit(content="✅ **Đã commit code mới lên GitHub thành công!**\n🚀 Render sẽ tự động bắt đầu Build và Deploy bản cập nhật mới trong 1-2 phút.")
+        await msg.edit(content="✅ **Đã commit code mới lên GitHub thành công!**\n🚀 Render sẽ tự động Build và Deploy bản cập nhật mới trong 1-2 phút.")
     else:
         await msg.edit(content=f"❌ Lỗi khi commit lên GitHub: `{put_r.json().get('message')}`")
 
@@ -1157,7 +1202,7 @@ async def listdelete(ctx):
 @replace_code.error
 async def command_permission_error(ctx, error):
     if isinstance(error, commands.NotOwner):
-        await ctx.send(f"❌ {ctx.author.mention}, chỉ Chủ sở hữu tài khoản Bot mới có quyền dùng lệnh này!", delete_after=10)
+        await ctx.author.send("❌ Chỉ Chủ sở hữu tài khoản Bot mới có quyền dùng lệnh này!") if ctx.guild is None else await ctx.send(f"❌ {ctx.author.mention}, chỉ Chủ sở hữu tài khoản Bot mới có quyền dùng lệnh này!", delete_after=10)
     elif isinstance(error, commands.CheckFailure):
         await ctx.send(f"❌ {ctx.author.mention}, m có quyền dell đâu mà sài lol", delete_after=10)
     elif isinstance(error, commands.MissingRequiredArgument):
