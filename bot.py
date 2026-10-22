@@ -8,6 +8,7 @@ import re
 import requests
 import asyncio
 from datetime import datetime, timedelta
+import io
 
 # --- 1. WEB SERVER ẢO GIỮ BOT ONLINE TRÊN RENDER ---
 app = Flask(__name__)
@@ -88,10 +89,8 @@ async def safe_delete(message, retry_on_ratelimit=True):
         await message.delete()
         return True
     except discord.NotFound:
-        # Tin đã bị xóa từ trước (do purge khác chẳng hạn) -> bỏ qua
         return True
     except discord.Forbidden:
-        # Bot không có quyền xóa -> bỏ qua
         return False
     except discord.HTTPException as e:
         if e.status == 429 and retry_on_ratelimit:
@@ -153,6 +152,19 @@ async def send_mod_log(guild, title, description, color=discord.Color.red()):
                 await channel.send(embed=embed)
             except:
                 pass
+
+# HÀM TRÍCH XUẤT BẢNG PHÂN QUYỀN CỦA KÊNH/ROLE (PHỤC VỤ BACKUP)
+def serialize_overwrites(channel):
+    overwrites_data = []
+    for target, overwrite in channel.overwrites.items():
+        if isinstance(target, discord.Role):
+            allow_pair, deny_pair = overwrite.pair()
+            overwrites_data.append({
+                "role_name": target.name,
+                "allow": allow_pair.value,
+                "deny": deny_pair.value
+            })
+    return overwrites_data
 
 # --- HÀM TẠO GIAO DIỆN EMBED CHO SETTING ---
 def get_setting_embed(guild_id_str):
@@ -333,16 +345,12 @@ async def on_message(message):
 
     # 0. HỆ THỐNG TIÊU DIỆT BOT/WEBHOOK MA (CHẠY NGAY LẬP TỨC TỪ TIN NHẮN #1)
     if server_settings.get("block_fake_bot", False):
-        # Kiểm tra nếu dấu hiệu người gửi là Bot hoặc Webhook
         if message.author.bot or message.webhook_id:
-            # Nếu người gửi KHÔNG PHẢI là một thành viên hợp lệ trong server (discord.Member) hoặc là Webhook
             if not isinstance(message.author, discord.Member) or message.webhook_id:
-                
-                await safe_delete(message) # Xóa không thương tiếc ngay từ tin nhắn đầu tiên
+                await safe_delete(message)
                 
                 target_name = message.author.name.lower()
                 
-                # Cập nhật danh sách đen
                 if target_name not in auto_delete_dict[guild_id_str]["names"]:
                     auto_delete_dict[guild_id_str]["names"].append(target_name)
                     save_data(auto_delete_dict)
@@ -361,17 +369,17 @@ async def on_message(message):
                         f"**Đối tượng:** `{message.author.name}`\n**Hành động:** Xóa lập tức & Block vĩnh viễn\n**Lý do:** Kẻ gửi không phải là thành viên hợp lệ (hoặc là Webhook).",
                         discord.Color.brand_red()
                     )
-                return # CHẶN ĐỨNG TẠI ĐÂY! Không cho code chạy tiếp xuống bộ đếm 5 tin nhắn.
+                return 
 
     # KIỂM TRA QUYỀN (LOẠI TRỪ WEBHOOK/BOT MA KHỎI QUYỀN STAFF)
     is_staff_or_bot = False
     if isinstance(message.author, discord.Member) and not message.webhook_id:
         if message.author.bot:
-            is_staff_or_bot = True # Đây là Bot chính thức hợp lệ của server
+            is_staff_or_bot = True 
         else:
             p = message.author.guild_permissions
             if p.administrator or p.manage_messages or p.manage_guild or p.kick_members or p.ban_members:
-                is_staff_or_bot = True # Đây là Staff/Admin
+                is_staff_or_bot = True 
 
     # 1. HỆ THỐNG CHỐNG SPAM TOÀN DIỆN
     if server_settings.get("anti_spam", False):
@@ -463,7 +471,6 @@ async def on_message(message):
             else:
                 slow_spam_tracker[tracker_key] = {"content": msg_content, "last_time": now, "count": 1, "first_duplicate_time": None}
 
-
     # 2. TÍNH NĂNG TỰ ĐỘNG XÓA VÀ CHỐNG GHOST PING CỦA DANH SÁCH ĐEN
     blacklisted_ids = server_data["ids"]
     blacklisted_names = server_data["names"]
@@ -516,7 +523,6 @@ async def on_message(message):
                     )
                 except discord.HTTPException:
                     pass
-        # Xóa tin nhắn an toàn: không còn bị crash vì 404 (tin đã mất) hay 429 (rate limit)
         await safe_delete(message)
             
     await bot.process_commands(message)
@@ -554,12 +560,218 @@ async def cmdhelp(ctx):
         inline=False
     )
     embed.add_field(
+        name="💾 `!backup` & `!restore`", 
+        value="• `!backup`: Sao lưu toàn bộ Role, Danh mục, Kênh chữ/thoại & Phân quyền lên Cloud + file `.json`.\n• `!restore`: Khôi phục lại toàn bộ cấu trúc Server (đính kèm file `.json` nếu có).", 
+        inline=False
+    )
+    embed.add_field(
         name="👻 Tự động xóa & Chống Ghost Ping", 
         value="• `!autodelete <ID/Tên>`: Đưa người dùng vào danh sách đen (tự xóa tin nhắn, cảnh cáo ghost ping).\n• `!stopdelete <ID/Tên>`: Xóa khỏi danh sách đen.\n• `!listdelete`: Xem danh sách đen hiện tại.", 
         inline=False
     )
     embed.set_footer(text="Hệ thống Vệ sĩ tự động • Chỉ dành cho Staff/Admin")
     await ctx.send(embed=embed)
+
+@bot.command(name="backup")
+@is_high_permission()
+async def backup(ctx):
+    guild = ctx.guild
+    msg = await ctx.send("🔄 Đang quét và sao lưu cấu trúc Server (Kênh, Role, Phân quyền)...")
+    
+    backup_data = {
+        "guild_name": guild.name,
+        "backup_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "roles": [],
+        "categories": []
+    }
+    
+    # 1. Quét Danh sách Role
+    for role in reversed(guild.roles):
+        if role.is_default():  # Bỏ qua @everyone mặc định
+            continue
+        backup_data["roles"].append({
+            "name": role.name,
+            "color": role.color.value,
+            "permissions": role.permissions.value,
+            "hoist": role.hoist,
+            "mentionable": role.mentionable
+        })
+        
+    # 2. Quét Danh mục (Category) và Các Kênh bên trong (Text + Voice)
+    for category in guild.categories:
+        cat_data = {
+            "name": category.name,
+            "overwrites": serialize_overwrites(category),
+            "text_channels": [],
+            "voice_channels": []
+        }
+        
+        for ch in category.channels:
+            if isinstance(ch, discord.TextChannel):
+                cat_data["text_channels"].append({
+                    "name": ch.name,
+                    "topic": ch.topic,
+                    "slowmode": ch.slowmode_delay,
+                    "nsfw": ch.nsfw,
+                    "overwrites": serialize_overwrites(ch)
+                })
+            elif isinstance(ch, discord.VoiceChannel):
+                cat_data["voice_channels"].append({
+                    "name": ch.name,
+                    "user_limit": ch.user_limit,
+                    "bitrate": ch.bitrate,
+                    "overwrites": serialize_overwrites(ch)
+                })
+        
+        backup_data["categories"].append(cat_data)
+        
+    # 3. Quét các kênh tự do không nằm trong Danh mục nào
+    no_cat_data = {
+        "name": "UNCATEGORIZED",
+        "overwrites": [],
+        "text_channels": [],
+        "voice_channels": []
+    }
+    for ch in guild.channels:
+        if ch.category is None:
+            if isinstance(ch, discord.TextChannel):
+                no_cat_data["text_channels"].append({
+                    "name": ch.name,
+                    "topic": ch.topic,
+                    "slowmode": ch.slowmode_delay,
+                    "nsfw": ch.nsfw,
+                    "overwrites": serialize_overwrites(ch)
+                })
+            elif isinstance(ch, discord.VoiceChannel):
+                no_cat_data["voice_channels"].append({
+                    "name": ch.name,
+                    "user_limit": ch.user_limit,
+                    "bitrate": ch.bitrate,
+                    "overwrites": serialize_overwrites(ch)
+                })
+    if no_cat_data["text_channels"] or no_cat_data["voice_channels"]:
+        backup_data["categories"].append(no_cat_data)
+        
+    # Lưu vào Upstash Redis
+    guild_id_str = str(guild.id)
+    if guild_id_str not in auto_delete_dict:
+        auto_delete_dict[guild_id_str] = {}
+    auto_delete_dict[guild_id_str]["backup"] = backup_data
+    save_data(auto_delete_dict)
+    
+    # Đóng gói dữ liệu thành file backup_server.json gửi vào chat
+    json_bytes = json.dumps(backup_data, indent=4, ensure_ascii=False).encode('utf-8')
+    file = discord.File(io.BytesIO(json_bytes), filename=f"backup_{guild.id}.json")
+    
+    await msg.edit(content=f"✅ **Đã sao lưu thành công!** Dữ liệu đã lưu lên Cloud (Upstash Redis) và đính kèm file bên dưới:")
+    await ctx.send(file=file)
+
+@bot.command(name="restore")
+@is_high_permission()
+async def restore(ctx):
+    guild = ctx.guild
+    guild_id_str = str(guild.id)
+    backup_data = None
+    
+    # 1. Ưu tiên đọc dữ liệu từ File .json người dùng đính kèm khi gõ !restore
+    if ctx.message.attachments:
+        attachment = ctx.message.attachments[0]
+        if attachment.filename.endswith(".json"):
+            content = await attachment.read()
+            try:
+                backup_data = json.loads(content.decode('utf-8'))
+            except Exception as e:
+                return await ctx.send("❌ File `.json` bị lỗi hoặc không đúng định dạng!")
+            
+    # 2. Nếu không đính kèm file, tự động lấy bản lưu gần nhất từ Cloud (Upstash Redis)
+    if not backup_data:
+        backup_data = auto_delete_dict.get(guild_id_str, {}).get("backup")
+        
+    if not backup_data:
+        return await ctx.send("❌ Không tìm thấy bản sao lưu nào trên Cloud hoặc file `.json` đính kèm!")
+        
+    msg = await ctx.send("⚠️ **ĐANG KHÔI PHỤC SERVER...** Quá trình này sẽ diễn ra từ từ để tránh bị Discord hạn chế kết nối (Rate Limit).")
+    
+    # A. Tạo lại các Role
+    created_roles = {}
+    for r_data in backup_data.get("roles", []):
+        existing = discord.utils.get(guild.roles, name=r_data["name"])
+        if not existing:
+            try:
+                new_role = await guild.create_role(
+                    name=r_data["name"],
+                    color=discord.Color(r_data["color"]),
+                    permissions=discord.Permissions(r_data["permissions"]),
+                    hoist=r_data["hoist"],
+                    mentionable=r_data["mentionable"]
+                )
+                created_roles[r_data["name"]] = new_role
+                await asyncio.sleep(0.5)
+            except discord.HTTPException:
+                pass
+        else:
+            created_roles[r_data["name"]] = existing
+            
+    # Hàm gán lại phân quyền Role cho Kênh
+    def build_overwrites(raw_overwrites):
+        ow = {}
+        for item in raw_overwrites:
+            r_obj = created_roles.get(item["role_name"]) or discord.utils.get(guild.roles, name=item["role_name"])
+            if r_obj:
+                allow_perms = discord.Permissions(item["allow"])
+                deny_perms = discord.Permissions(item["deny"])
+                ow[r_obj] = discord.PermissionOverwrite.from_pair(allow_perms, deny_perms)
+        return ow
+
+    # B. Tạo lại Các Danh Mục & Kênh (Text + Voice)
+    for cat_data in backup_data.get("categories", []):
+        cat_name = cat_data["name"]
+        category_obj = None
+        
+        if cat_name != "UNCATEGORIZED":
+            category_obj = discord.utils.get(guild.categories, name=cat_name)
+            if not category_obj:
+                try:
+                    category_obj = await guild.create_category(
+                        name=cat_name,
+                        overwrites=build_overwrites(cat_data.get("overwrites", []))
+                    )
+                    await asyncio.sleep(0.5)
+                except discord.HTTPException:
+                    pass
+                    
+        # Dựng lại Kênh chữ (Text Channels)
+        for txt in cat_data.get("text_channels", []):
+            if not discord.utils.get(guild.text_channels, name=txt["name"], category=category_obj):
+                try:
+                    await guild.create_text_channel(
+                        name=txt["name"],
+                        category=category_obj,
+                        topic=txt.get("topic"),
+                        slowmode_delay=txt.get("slowmode", 0),
+                        nsfw=txt.get("nsfw", False),
+                        overwrites=build_overwrites(txt.get("overwrites", []))
+                    )
+                    await asyncio.sleep(0.5)
+                except discord.HTTPException:
+                    pass
+                    
+        # Dựng lại Kênh thoại (Voice Channels)
+        for vc in cat_data.get("voice_channels", []):
+            if not discord.utils.get(guild.voice_channels, name=vc["name"], category=category_obj):
+                try:
+                    await guild.create_voice_channel(
+                        name=vc["name"],
+                        category=category_obj,
+                        user_limit=vc.get("user_limit", 0),
+                        bitrate=min(vc.get("bitrate", 64000), guild.bitrate_limit),
+                        overwrites=build_overwrites(vc.get("overwrites", []))
+                    )
+                    await asyncio.sleep(0.5)
+                except discord.HTTPException:
+                    pass
+                    
+    await msg.edit(content="✅ **KHÔI PHỤC HOÀN TẤT!** Toàn bộ Kênh thoại, Kênh chữ, Role và Phân quyền đã được tái tạo.")
 
 @bot.command(name="setlogg")
 @is_high_permission()
@@ -582,7 +794,6 @@ async def setlogg(ctx, channel: discord.TextChannel = None):
 async def lockdown(ctx):
     perms = ctx.guild.default_role.permissions
     if perms.send_messages:
-        # Khóa server (tắt quyền gửi tin nhắn của @everyone)
         perms.update(send_messages=False)
         try:
             await ctx.guild.default_role.edit(permissions=perms, reason="Khóa khẩn cấp Anti-Nuke")
@@ -591,7 +802,6 @@ async def lockdown(ctx):
         except discord.Forbidden:
             await ctx.send("❌ Lỗi: Bot không đủ quyền để chỉnh sửa Role `@everyone`!")
     else:
-        # Mở khóa server
         perms.update(send_messages=True)
         try:
             await ctx.guild.default_role.edit(permissions=perms, reason="Mở khóa Anti-Nuke")
@@ -795,7 +1005,10 @@ async def listdelete(ctx):
 @lockdown.error
 @setting.error
 @nospam.error
+@blockfakebot.error
 @cmdhelp.error
+@backup.error
+@restore.error
 async def command_permission_error(ctx, error):
     if isinstance(error, commands.CheckFailure):
         await ctx.send(f"❌ {ctx.author.mention}, m có quyền dell đâu mà sài lol", delete_after=10)
