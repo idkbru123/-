@@ -48,7 +48,7 @@ REDIS_KEY = "bot_data"
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "idkbru123/-")
 
-# DANH SÁCH ID ĐƯỢC PHÉP DÙNG LỆNH !REPLACECODE (Đã thêm ID của bạn)
+# DANH SÁCH ID ĐƯỢC PHÉP DÙNG LỆNH !REPLACECODE
 EXTRA_OWNER_IDS = [
     1064147446894174278,
 ]
@@ -98,7 +98,7 @@ msg_spam_tracker = {}
 slow_spam_tracker = {} 
 blocked_spam_count = 0 # Đếm tổng số spam đã chặn
 
-# --- HÀM XÓA TIN NHẮN AN TOÀN (CHỐNG 404 / 429) ---
+# --- HÀM XÓA TIN NHẮN AN TOÀN (TỐI ƯU CHỐNG 429 RATE LIMIT) ---
 async def safe_delete(message, retry_on_ratelimit=True):
     try:
         await message.delete()
@@ -108,14 +108,16 @@ async def safe_delete(message, retry_on_ratelimit=True):
     except discord.Forbidden:
         return False
     except discord.HTTPException as e:
-        if e.status == 429 and retry_on_ratelimit:
-            retry_after = getattr(e, "retry_after", 1) or 1
-            await asyncio.sleep(retry_after)
-            try:
-                await message.delete()
-                return True
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                return False
+        # Tối ưu: Nếu gặp 429, không cố chấp spam request xóa nữa mà thả lỏng để bảo vệ API
+        if e.status == 429:
+            if retry_on_ratelimit:
+                retry_after = getattr(e, "retry_after", 2) or 2
+                await asyncio.sleep(retry_after)
+                try:
+                    await message.delete()
+                    return True
+                except:
+                    return False
         return False
 
 # HÀM KIỂM TRA QUYỀN CAO
@@ -162,7 +164,7 @@ def parse_time_to_seconds(time_str):
 
     return total_seconds
 
-# HÀM GỬI NHẬT KÝ (MOD LOGS)
+# HÀM GỬI NHẬT KÝ (MOD LOGS) - Tối ưu 429
 async def send_mod_log(guild, title, description, color=discord.Color.red()):
     guild_id_str = str(guild.id)
     log_channel_id = auto_delete_dict.get(guild_id_str, {}).get("settings", {}).get("log_channel")
@@ -174,8 +176,9 @@ async def send_mod_log(guild, title, description, color=discord.Color.red()):
             embed.set_footer(text="Hệ thống Vệ sĩ tự động")
             try:
                 await channel.send(embed=embed)
-            except:
-                pass
+            except discord.HTTPException as e:
+                if e.status == 429:
+                    pass # Bỏ qua log nếu đang bị quá tải API
 
 # HÀM TRÍCH XUẤT BẢNG PHÂN QUYỀN CỦA KÊNH/ROLE (PHỤC VỤ BACKUP)
 def serialize_overwrites(channel):
@@ -592,11 +595,12 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-# --- 3. LỆNH ĐIỀU KHIỂN ---
 
-# LỆNH CẤP QUYỀN CHO NGƯỜI KHÁC DÙNG !REPLACECODE
+# --- 3. LỆNH ĐIỀU KHIỂN (ĐÃ THÊM COOLDOWN BẢO VỆ API) ---
+
 @bot.command(name="addowner")
 @commands.is_owner()
+@commands.cooldown(1, 2, commands.BucketType.user)
 async def add_owner(ctx, member: discord.Member):
     if member.id in EXTRA_OWNER_IDS:
         return await ctx.send(f"⚠️ {member.mention} đã có trong danh sách từ trước rồi!")
@@ -604,18 +608,18 @@ async def add_owner(ctx, member: discord.Member):
     EXTRA_OWNER_IDS.append(member.id)
     await ctx.send(f"✅ Đã cấp quyền sử dụng `!replacecode` cho {member.mention}!")
 
-# LỆNH GỠ QUYỀN
 @bot.command(name="removeowner")
 @commands.is_owner()
+@commands.cooldown(1, 2, commands.BucketType.user)
 async def remove_owner(ctx, member: discord.Member):
     if member.id in EXTRA_OWNER_IDS:
         EXTRA_OWNER_IDS.remove(member.id)
         return await ctx.send(f"✅ Đã thu hồi quyền của {member.mention}!")
     await ctx.send(f"❌ {member.mention} không nằm trong danh sách được cấp quyền phụ.")
 
-# LỆNH TỰ ĐỘNG CHỈNH SỬA CODE QUA GITHUB API (KIỂM TRA CÚ PHÁP + DRY-RUN 5S + PHÂN QUYỀN MỚI)
 @bot.command(name="replacecode")
 @commands.check(check_replace_permission)
+@commands.cooldown(1, 5, commands.BucketType.user)
 async def replace_code(ctx, *, args: str):
     if not GITHUB_TOKEN or not GITHUB_REPO:
         return await ctx.send("❌ Chưa cấu hình `GITHUB_TOKEN` hoặc `GITHUB_REPO` trên Render!")
@@ -643,7 +647,6 @@ async def replace_code(ctx, *, args: str):
     sha = file_data["sha"]
     current_content = base64.b64decode(file_data["content"]).decode('utf-8')
 
-    # Nếu người dùng nhập "ALL" -> Xóa sạch toàn bộ code cũ và ghi đè code mới
     if old_code.upper() in ["ALL", "*", "CLEAR", "FULL"]:
         updated_content = new_code
     else:
@@ -651,14 +654,12 @@ async def replace_code(ctx, *, args: str):
             return await msg.edit(content="❌ Không tìm thấy đoạn code cũ cần thay thế trong file `bot.py`!")
         updated_content = current_content.replace(old_code, new_code, 1)
 
-    # 1. KIỂM TRA CÚ PHÁP TĨNH (SYNTAX CHECK)
     try:
         compile(updated_content, filename='bot.py', mode='exec')
     except SyntaxError as e:
         error_line = e.text.strip() if e.text else 'Không xác định'
         return await msg.edit(content=f"❌ **LỖI CÚ PHÁP (SYNTAX ERROR)!**\nCode bị lỗi nên bot **ĐÃ CHẶN LẠI**, không commit lên GitHub.\n\n• **Chi tiết lỗi:** `{e.msg}`\n• **Dòng lỗi:** `{e.lineno}`\n• **Đoạn mã lỗi:** `{error_line}`")
 
-    # 2. CHẠY THỬ NGẦM (DRY-RUN) TRONG 5 GIÂY ĐỂ BẮT LỖI RUNTIME
     await msg.edit(content="🧪 **Đang chạy thử code mới trong môi trường cách ly (5 giây)...**")
     
     test_filename = "temp_test_bot.py"
@@ -690,7 +691,6 @@ async def replace_code(ctx, *, args: str):
     if os.path.exists(test_filename):
         os.remove(test_filename)
 
-    # 3. MỌI THỨ AN TOÀN -> COMMIT LÊN GITHUB
     await msg.edit(content="✅ **Code chạy thử an toàn!** Đang tiến hành commit lên GitHub...")
     encoded_updated_content = base64.b64encode(updated_content.encode('utf-8')).decode('utf-8')
     data = {
@@ -707,6 +707,7 @@ async def replace_code(ctx, *, args: str):
 
 @bot.command(name="cmdhelp")
 @is_high_permission()
+@commands.cooldown(1, 2, commands.BucketType.user)
 async def cmdhelp(ctx):
     embed = discord.Embed(
         title="📚 Hướng Dẫn Sử Dụng Tính Năng Chống Spam",
@@ -715,46 +716,19 @@ async def cmdhelp(ctx):
     )
     embed.set_image(url="https://cdn.discordapp.com/attachments/1344684960878952590/1562683883575845004/attachment.gif")
 
-    embed.add_field(
-        name="🛠️ `!setting`", 
-        value="Mở bảng điều khiển chính để chỉnh sửa các mốc giới hạn, thời gian mute và bật/tắt tính năng chống spam.", 
-        inline=False
-    )
-    embed.add_field(
-        name="🛡️ `!nospam`", 
-        value="Lệnh bật/tắt nhanh chế độ chống spam mà không cần mở bảng cài đặt.", 
-        inline=False
-    )
-    embed.add_field(
-        name="📓 `!setlogg #kênh` / `!setlogg`", 
-        value="Thiết lập kênh để nhận thông báo (Mod Logs) mỗi khi bot xử lý vi phạm. Gõ lệnh không kèm kênh để tắt.", 
-        inline=False
-    )
-    embed.add_field(
-        name="🚨 `!lockdown`", 
-        value="Khóa/Mở khóa khẩn cấp Server (Tắt/Bật quyền gửi tin nhắn của `@everyone`). Dùng khi bị raid.", 
-        inline=False
-    )
-    embed.add_field(
-        name="💾 `!backup` & `!restore`", 
-        value="• `!backup`: Sao lưu toàn bộ Role, Danh mục, Kênh chữ/thoại & Phân quyền lên Cloud + gửi file `.json` qua DM.\n• `!restore`: Khôi phục lại toàn bộ cấu trúc Server (đính kèm file `.json` nếu có).", 
-        inline=False
-    )
-    embed.add_field(
-        name="📊 `!stats` / `!health`", 
-        value="Xem báo cáo sức khỏe chi tiết của Bot, độ trễ API, dung lượng RAM và tổng số tin rác đã chặn.", 
-        inline=False
-    )
-    embed.add_field(
-        name="👻 Tự động xóa & Chống Ghost Ping", 
-        value="• `!autodelete <ID/Tên>`: Đưa người dùng vào danh sách đen (tự xóa tin nhắn, cảnh cáo ghost ping).\n• `!stopdelete <ID/Tên>`: Xóa khỏi danh sách đen.\n• `!listdelete`: Xem danh sách đen hiện tại.", 
-        inline=False
-    )
+    embed.add_field(name="🛠️ `!setting`", value="Mở bảng điều khiển chính để chỉnh sửa các mốc giới hạn, thời gian mute và bật/tắt tính năng chống spam.", inline=False)
+    embed.add_field(name="🛡️ `!nospam`", value="Lệnh bật/tắt nhanh chế độ chống spam mà không cần mở bảng cài đặt.", inline=False)
+    embed.add_field(name="📓 `!setlogg #kênh` / `!setlogg`", value="Thiết lập kênh để nhận thông báo (Mod Logs) mỗi khi bot xử lý vi phạm. Gõ lệnh không kèm kênh để tắt.", inline=False)
+    embed.add_field(name="🚨 `!lockdown`", value="Khóa/Mở khóa khẩn cấp Server (Tắt/Bật quyền gửi tin nhắn của `@everyone`). Dùng khi bị raid.", inline=False)
+    embed.add_field(name="💾 `!backup` & `!restore`", value="• `!backup`: Sao lưu toàn bộ Role, Danh mục, Kênh chữ/thoại & Phân quyền lên Cloud + gửi file `.json` qua DM.\n• `!restore`: Khôi phục lại toàn bộ cấu trúc Server (đính kèm file `.json` nếu có).", inline=False)
+    embed.add_field(name="📊 `!stats` / `!health`", value="Xem báo cáo sức khỏe chi tiết của Bot, độ trễ API, dung lượng RAM và tổng số tin rác đã chặn.", inline=False)
+    embed.add_field(name="👻 Tự động xóa & Chống Ghost Ping", value="• `!autodelete <ID/Tên>`: Đưa người dùng vào danh sách đen (tự xóa tin nhắn, cảnh cáo ghost ping).\n• `!stopdelete <ID/Tên>`: Xóa khỏi danh sách đen.\n• `!listdelete`: Xem danh sách đen hiện tại.", inline=False)
     embed.set_footer(text="Hệ thống Vệ sĩ tự động • Chỉ dành cho Staff/Admin")
     await ctx.send(embed=embed)
 
 @bot.command(name="stats", aliases=["health"])
 @is_high_permission()
+@commands.cooldown(1, 2, commands.BucketType.user)
 async def stats(ctx):
     uptime_seconds = int(time.time() - start_time)
     uptime_str = str(timedelta(seconds=uptime_seconds))
@@ -769,30 +743,13 @@ async def stats(ctx):
     guild_count = len(bot.guilds)
     total_members = sum(g.member_count for g in bot.guilds)
 
-    embed = discord.Embed(
-        title="📊 BÁO CÁO SỨC KHỎE HỆ THỐNG", 
-        color=discord.Color.teal(),
-        timestamp=datetime.now()
-    )
+    embed = discord.Embed(title="📊 BÁO CÁO SỨC KHỎE HỆ THỐNG", color=discord.Color.teal(), timestamp=datetime.now())
     embed.set_thumbnail(url=bot.user.avatar.url if bot.user.avatar else bot.user.default_avatar.url)
     embed.set_image(url="https://cdn.discordapp.com/attachments/1344684960878952590/1562683883575845004/attachment.gif")
 
-    embed.add_field(
-        name="⚙️ Trạng Thái Kết Nối", 
-        value=f"• **Ping Discord:** `{ping}ms` ({ping_status})\n• **Uptime:** `{uptime_str}`\n• **Lưu trữ Cloud:** `🟢 Hoạt động`", 
-        inline=False
-    )
-    embed.add_field(
-        name="💻 Tài Nguyên Cấu Hình", 
-        value=f"• **RAM Usage:** `{ram_usage:.2f} MB`\n• **CPU Usage:** `{cpu_usage}%`\n• **Nền tảng:** `Flask / Render`", 
-        inline=False
-    )
-    embed.add_field(
-        name="🛡️ Hiệu Suất Bảo Vệ", 
-        value=f"• **Phục vụ:** `{guild_count} Server` | `{total_members} Thành viên`\n• **Tổng tin rác đã chặn:** `{blocked_spam_count} tin nhắn`\n• **Anti-Nuke / Anti-Spam:** `🟢 Đang trực`", 
-        inline=False
-    )
-    
+    embed.add_field(name="⚙️ Trạng Thái Kết Nối", value=f"• **Ping Discord:** `{ping}ms` ({ping_status})\n• **Uptime:** `{uptime_str}`\n• **Lưu trữ Cloud:** `🟢 Hoạt động`", inline=False)
+    embed.add_field(name="💻 Tài Nguyên Cấu Hình", value=f"• **RAM Usage:** `{ram_usage:.2f} MB`\n• **CPU Usage:** `{cpu_usage}%`\n• **Nền tảng:** `Flask / Render`", inline=False)
+    embed.add_field(name="🛡️ Hiệu Suất Bảo Vệ", value=f"• **Phục vụ:** `{guild_count} Server` | `{total_members} Thành viên`\n• **Tổng tin rác đã chặn:** `{blocked_spam_count} tin nhắn`\n• **Anti-Nuke / Anti-Spam:** `🟢 Đang trực`", inline=False)
     embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.avatar.url if ctx.author.avatar else ctx.author.default_avatar.url)
     
     view = StatsView(ctx.author)
@@ -800,6 +757,7 @@ async def stats(ctx):
 
 @bot.command(name="backup")
 @is_high_permission()
+@commands.cooldown(1, 5, commands.BucketType.user)
 async def backup(ctx):
     guild = ctx.guild
     msg = await ctx.send("🔄 Đang quét và sao lưu cấu trúc Server (Kênh, Role, Phân quyền)...")
@@ -893,6 +851,7 @@ async def backup(ctx):
 
 @bot.command(name="restore")
 @is_high_permission()
+@commands.cooldown(1, 10, commands.BucketType.user)
 async def restore(ctx):
     guild = ctx.guild
     guild_id_str = str(guild.id)
@@ -993,6 +952,7 @@ async def restore(ctx):
 
 @bot.command(name="setlogg")
 @is_high_permission()
+@commands.cooldown(1, 2, commands.BucketType.user)
 async def setlogg(ctx, channel: discord.TextChannel = None):
     guild_id_str = str(ctx.guild.id)
     if guild_id_str not in auto_delete_dict:
@@ -1009,6 +969,7 @@ async def setlogg(ctx, channel: discord.TextChannel = None):
 
 @bot.command(name="lockdown")
 @is_high_permission()
+@commands.cooldown(1, 2, commands.BucketType.user)
 async def lockdown(ctx):
     perms = ctx.guild.default_role.permissions
     if perms.send_messages:
@@ -1030,6 +991,7 @@ async def lockdown(ctx):
 
 @bot.command(name="setting")
 @is_high_permission()
+@commands.cooldown(1, 2, commands.BucketType.user)
 async def setting(ctx):
     guild_id_str = str(ctx.guild.id)
     if guild_id_str not in auto_delete_dict:
@@ -1041,6 +1003,7 @@ async def setting(ctx):
 
 @bot.command(name="nospam")
 @is_high_permission()
+@commands.cooldown(1, 2, commands.BucketType.user)
 async def nospam(ctx):
     guild_id_str = str(ctx.guild.id)
     if guild_id_str not in auto_delete_dict:
@@ -1060,6 +1023,7 @@ async def nospam(ctx):
 
 @bot.command(name="blockfakebot")
 @is_high_permission()
+@commands.cooldown(1, 2, commands.BucketType.user)
 async def blockfakebot(ctx):
     guild_id_str = str(ctx.guild.id)
     if guild_id_str not in auto_delete_dict:
@@ -1076,6 +1040,7 @@ async def blockfakebot(ctx):
 
 @bot.command(name="autodelete")
 @is_high_permission()
+@commands.cooldown(1, 2, commands.BucketType.user)
 async def autodelete(ctx, *, target: str):
     clean_target = target.strip("<@!>").strip()
     guild_id_str = str(ctx.guild.id)
@@ -1126,6 +1091,7 @@ async def autodelete(ctx, *, target: str):
 
 @bot.command(name="stopdelete")
 @is_high_permission()
+@commands.cooldown(1, 2, commands.BucketType.user)
 async def stopdelete(ctx, *, target: str):
     guild_id_str = str(ctx.guild.id)
     server_data = auto_delete_dict.get(guild_id_str, {"ids": [], "names": []})
@@ -1151,6 +1117,7 @@ async def stopdelete(ctx, *, target: str):
 
 @bot.command(name="listdelete")
 @is_high_permission()
+@commands.cooldown(1, 2, commands.BucketType.user)
 async def listdelete(ctx):
     guild_id_str = str(ctx.guild.id)
     server_data = auto_delete_dict.get(guild_id_str, {"ids": [], "names": []})
@@ -1217,25 +1184,21 @@ async def listdelete(ctx):
 
     await ctx.send(f"📋 **Danh sách bị tự động xóa:**\n{list_str}\n*(Bấm nút để tắt nhanh)*", view=StopDeleteView(ctx.author))
 
-@autodelete.error
-@stopdelete.error
-@setlogg.error
-@lockdown.error
-@setting.error
-@nospam.error
-@blockfakebot.error
-@cmdhelp.error
-@backup.error
-@restore.error
-@stats.error
-@replace_code.error
-async def command_permission_error(ctx, error):
-    if isinstance(error, commands.NotOwner):
+# --- HỆ THỐNG BẮT LỖI TỔNG (GLOBAL ERROR HANDLER) GIÚP CHỐNG SPAM LỆNH ---
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandOnCooldown):
+        # Bắt được ai đó (kể cả Admin) spam quá nhanh
+        msg = await ctx.send(f"⏳ **Chậm lại!** Vui lòng đợi `{error.retry_after:.1f} giây` để dùng tiếp lệnh này.", delete_after=3)
+    elif isinstance(error, commands.NotOwner):
         await ctx.author.send("❌ Chỉ Chủ sở hữu tài khoản Bot mới có quyền dùng lệnh này!") if ctx.guild is None else await ctx.send(f"❌ {ctx.author.mention}, chỉ Chủ sở hữu tài khoản Bot mới có quyền dùng lệnh này!", delete_after=10)
     elif isinstance(error, commands.CheckFailure):
         await ctx.send(f"❌ {ctx.author.mention}, m có quyền dell đâu mà sài lol", delete_after=10)
     elif isinstance(error, commands.MissingRequiredArgument):
         await ctx.send(f"⚠️ Lỗi cú pháp! Gõ thiếu thông tin.", delete_after=10)
+    else:
+        # Bỏ qua các lỗi lặt vặt khác để không spam log console
+        pass
 
 keep_alive()
 token = os.environ.get("BOT_TOKEN")
