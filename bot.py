@@ -36,7 +36,11 @@ intents.message_content = True
 intents.members = True
 intents.guilds = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+# LẤY PROXY TỪ RENDER ĐỂ VƯỢT RATE LIMIT
+PROXY_URL = os.environ.get("PROXY_URL")
+
+# Truyền proxy vào Bot (Nếu trên Render không có biến PROXY_URL, bot sẽ chạy bằng IP gốc)
+bot = commands.Bot(command_prefix="!", intents=intents, proxy=PROXY_URL)
 start_time = time.time() # Lưu thời gian bắt đầu chạy bot để tính Uptime
 
 # --- HỆ THỐNG LƯU TRỮ VĨNH VIỄN QUA UPSTASH REDIS ---
