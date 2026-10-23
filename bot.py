@@ -530,14 +530,14 @@ async def on_message(message):
 
 class ReplaceCodeModal(discord.ui.Modal, title="🛠️ Cập Nhật Code Bot.py"):
     old_code_input = discord.ui.TextInput(
-        label="Đoạn Code Cũ cần tìm (hoặc gõ ALL để thay toàn bộ):",
+        label="Mã cũ cần thay (hoặc gõ ALL)",
         style=discord.TextStyle.paragraph,
         placeholder="Dán đoạn code cũ vào đây...",
         required=True,
         max_length=4000
     )
     new_code_input = discord.ui.TextInput(
-        label="Đoạn Code Mới thay thế:",
+        label="Mã mới thay thế",
         style=discord.TextStyle.paragraph,
         placeholder="Dán đoạn code mới vào đây...",
         required=True,
@@ -678,7 +678,7 @@ async def cmdhelp(ctx):
     embed.add_field(name="💾 `!backup` & `!restore`", value="• `!backup`: Sao lưu toàn bộ Role, Danh mục, Kênh chữ/thoại & Phân quyền lên Cloud + gửi file `.json` qua DM.\n• `!restore`: Khôi phục lại toàn bộ cấu trúc Server (đính kèm file `.json` nếu có).", inline=False)
     embed.add_field(name="📊 `!stats` / `!health`", value="Xem báo cáo sức khỏe chi tiết của Bot, độ trễ API, dung lượng RAM và tổng số tin rác đã chặn.", inline=False)
     embed.add_field(name="👻 Tự động xóa & Chống Ghost Ping", value="• `!autodelete <ID/Tên>`: Đưa người dùng vào danh sách đen (tự xóa tin nhắn, cảnh cáo ghost ping).\n• `!stopdelete <ID/Tên>`: Xóa khỏi danh sách đen.\n• `!listdelete`: Xem danh sách đen hiện tại.", inline=False)
-    embed.add_field(name="💻 Trạm Điều Khiển PC", value="• `!pcguide`: Xem hướng dẫn kết nối máy tính.\n• `!mypc`: Xem số liệu máy tính.\n• `!pccmd`: Điều khiển PC (khóa, tắt máy...).", inline=False)
+    embed.add_field(name="💻 Trạm Điều Khiển PC", value="• `!pcguide`: Xem hướng dẫn & Nhận file cấu hình riêng qua DM.\n• `!mypc`: Xem số liệu máy tính.\n• `!pccmd`: Điều khiển PC (khóa, tắt máy...).", inline=False)
     embed.set_footer(text="Hệ thống Vệ sĩ tự động • Chỉ dành cho Staff/Admin")
     await ctx.send(embed=embed)
 
@@ -1097,7 +1097,7 @@ async def listdelete(ctx):
 
 
 # =========================================================================
-# --- TRẠM ĐIỀU KHIỂN HARDWARE (ĐA NGƯỜI DÙNG) ---
+# --- TRẠM ĐIỀU KHIỂN HARDWARE (ĐA NGƯỜI DÙNG TỰ ĐỘNG GỬI FILE) ---
 # =========================================================================
 
 @bot.command(name="mypc")
@@ -1115,7 +1115,7 @@ async def mypc(ctx):
         result = r.json().get("result")
         
         if not result:
-            return await msg.edit(content=f"❌ Không tìm thấy máy tính nào được liên kết với bạn!\n👉 Vui lòng chạy file `pc_agent.py` trên máy tính của bạn trước. Hoặc gõ `!pcguide` để xem hướng dẫn thiết lập.")
+            return await msg.edit(content=f"❌ Không tìm thấy máy tính nào được liên kết với bạn!\n👉 Vui lòng gõ `!pcguide` để nhận file cấu hình tự động và hướng dẫn.")
             
         stats = json.loads(json.loads(result))
         
@@ -1154,35 +1154,108 @@ async def pccmd(ctx, action: str = None):
 @bot.command(name="pcguide")
 @commands.cooldown(1, 10, commands.BucketType.user)
 async def pcguide(ctx):
+    user_id = str(ctx.author.id)
+    
+    agent_code = f'''import psutil
+import requests
+import json
+import time
+import os
+import ctypes
+
+UPSTASH_URL = "{UPSTASH_URL}"
+UPSTASH_TOKEN = "{UPSTASH_TOKEN}"
+MY_DISCORD_ID = "{user_id}"
+
+STATS_KEY = f"pc_stats_{{MY_DISCORD_ID}}"
+CMD_KEY = f"pc_cmd_{{MY_DISCORD_ID}}"
+
+def update_pc_stats():
+    try:
+        cpu_usage = psutil.cpu_percent(interval=1)
+        ram = psutil.virtual_memory()
+        ram_usage = ram.percent
+        
+        battery = psutil.sensors_battery()
+        batt_percent = battery.percent if battery else "Cắm nguồn/PC bàn"
+        batt_plugged = "🔌" if battery and battery.power_plugged else "🔋"
+
+        stats = {{
+            "cpu": cpu_usage,
+            "ram_percent": ram_usage,
+            "ram_text": f"{{round(ram.used / (1024**3), 1)}}GB / {{round(ram.total / (1024**3), 1)}}GB",
+            "battery": f"{{batt_percent}}% {{batt_plugged}}",
+            "last_update": time.strftime("%H:%M:%S")
+        }}
+
+        requests.post(
+            f"{{UPSTASH_URL}}/set/{{STATS_KEY}}",
+            headers={{"Authorization": f"Bearer {{UPSTASH_TOKEN}}"}},
+            json=json.dumps(stats),
+            timeout=5
+        )
+        print(f"[{{stats['last_update']}}] Đã cập nhật số liệu PC lên Cloud.")
+    except Exception as e:
+        pass
+
+def check_for_commands():
+    try:
+        r = requests.get(
+            f"{{UPSTASH_URL}}/get/{{CMD_KEY}}",
+            headers={{"Authorization": f"Bearer {{UPSTASH_TOKEN}}"}},
+            timeout=5
+        )
+        cmd_data = r.json().get("result")
+        
+        if cmd_data:
+            action = json.loads(cmd_data).get("action")
+            print(f"⚠️ Nhận lệnh điều khiển: {{action}}")
+            requests.post(f"{{UPSTASH_URL}}/del/{{CMD_KEY}}", headers={{"Authorization": f"Bearer {{UPSTASH_TOKEN}}"}})
+
+            if action == "lock": ctypes.windll.user32.LockWorkStation()
+            elif action == "sleep": os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
+            elif action == "shutdown": os.system("shutdown /s /t 10")
+            elif action == "abort": os.system("shutdown /a")
+            elif action == "open_browser": os.system("start https://google.com")
+    except Exception as e:
+        pass
+
+print(f"🚀 Trạm kiểm soát đang hoạt động. Đã liên kết với ID Discord: {{MY_DISCORD_ID}}")
+while True:
+    update_pc_stats()
+    check_for_commands()
+    time.sleep(10)
+'''
+
+    file_bytes = io.BytesIO(agent_code.encode('utf-8'))
+    file = discord.File(file_bytes, filename="pc_agent.py")
+
     embed = discord.Embed(
-        title="🛠️ HƯỚNG DẪN KẾT NỐI MÁY TÍNH VỚI BOT",
-        description="Để có thể dùng lệnh `!mypc` và `!pccmd` điều khiển máy tính của bạn qua Discord, hãy làm theo các bước sau:",
+        title="🛠️ FILE CẤU HÌNH PC CỦA BẠN ĐÃ SẴN SÀNG",
+        description="Bot đã tự động tạo file `pc_agent.py` riêng biệt tích hợp sẵn mã định danh của bạn. Hãy làm theo các bước sau để chạy:",
         color=discord.Color.blue()
     )
-    
     embed.add_field(
-        name="Bước 1: Lấy ID Discord của bạn",
-        value="1. Vào **Cài đặt (User Settings)** > **Nâng cao (Advanced)** > Bật **Chế độ nhà phát triển (Developer Mode)**.\n2. Chuột phải vào Avatar của bạn (góc dưới bên trái màn hình) > Chọn **Sao chép ID người dùng (Copy User ID)**.",
+        name="Bước 1: Cài đặt thư viện (Chỉ cần làm 1 lần trên máy)",
+        value="Mở thư mục bất kỳ, gõ `cmd` vào thanh địa chỉ rồi Enter. Ở bảng đen hiện ra, gõ lệnh:\n`pip install psutil requests`",
         inline=False
     )
     embed.add_field(
-        name="Bước 2: Cài đặt thư viện (Chỉ làm 1 lần)",
-        value="Mở thư mục bất kỳ trên máy tính, gõ `cmd` vào thanh đường dẫn (Path) rồi ấn Enter để mở bảng đen. Sau đó gõ lệnh sau vào bảng đen rồi ấn Enter để cài:\n`pip install psutil requests`",
+        name="Bước 2: Khởi chạy file",
+        value="Tải file `pc_agent.py` mà bot vừa gửi riêng vào Tin nhắn (DM) của bạn xuống máy, sau đó **click đúp** vào file đó là xong!",
         inline=False
     )
     embed.add_field(
-        name="Bước 3: Thiết lập & Chạy File hệ thống (Local Agent)",
-        value="1. Xin Admin file tên là `pc_agent.py`.\n2. Chuột phải vào file đó, chọn **Edit with Notepad** (hoặc mở bằng VSCode/Sublime).\n3. Tìm dòng `MY_DISCORD_ID` và dán cái ID số dài loằng ngoằng bạn copy ở Bước 1 vào giữa cặp dấu ngoặc kép. Lưu file lại (Ctrl + S).\n4. Click đúp chuột vào file `pc_agent.py` để chạy nó. Cửa sổ đen hiện lên báo kết nối thành công là xong!",
+        name="Bước 3: Trải nghiệm",
+        value="• Gõ `!mypc` để kiểm tra thông số máy.\n• Gõ `!pccmd sleep` hoặc `!pccmd shutdown` để điều khiển máy từ xa.",
         inline=False
     )
-    embed.add_field(
-        name="Bước 4: Sử dụng Lệnh",
-        value="• Gõ `!mypc` vào kênh chat Discord để xem CPU, RAM, Pin máy tính của bạn.\n• Gõ `!pccmd sleep` hoặc `!pccmd shutdown` để tắt máy từ xa.\n*(Hệ thống siêu bảo mật: Chỉ ID của bạn mới điều khiển được PC của bạn, không ai thao tác chéo được!)*",
-        inline=False
-    )
-    
-    embed.set_footer(text="Hệ thống Trạm điều khiển Local PC • Được lập trình bằng Python")
-    await ctx.send(embed=embed)
+
+    try:
+        await ctx.author.send("📂 Đây là file `pc_agent.py` độc quyền của bạn:", file=file)
+        await ctx.send(f"✅ {ctx.author.mention} Kiểm tra **Tin nhắn riêng (DM)** ngay nhé! Bot đã gửi file `pc_agent.py` được cấu hình sẵn cho riêng bạn ở đó.")
+    except discord.Forbidden:
+        await ctx.send(f"⚠️ {ctx.author.mention} Bạn đang khóa Tin nhắn riêng (DM), bot không gửi file cá nhân được. Đây là file của bạn:", file=file, embed=embed)
 
 
 # --- HỆ THỐNG BẮT LỖI TỔNG (GLOBAL ERROR HANDLER) GIÚP CHỐNG SPAM LỆNH ---
