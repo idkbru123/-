@@ -1230,32 +1230,34 @@ while True:
     file_bytes = io.BytesIO(agent_code.encode('utf-8'))
     file = discord.File(file_bytes, filename="pc_agent.py")
 
+    # Tạo bảng Embed hướng dẫn chi tiết gửi kèm vào DM
     embed = discord.Embed(
-        title="🛠️ FILE CẤU HÌNH PC CỦA BẠN ĐÃ SẴN SÀNG",
-        description="Bot đã tự động tạo file `pc_agent.py` riêng biệt tích hợp sẵn mã định danh của bạn. Hãy làm theo các bước sau để chạy:",
+        title="🛠️ HƯỚNG DẪN CÀI ĐẶT TRẠM ĐIỀU KHIỂN PC",
+        description="Bot đã tự động tạo file `pc_agent.py` độc quyền dành riêng cho bạn (đã được nạp sẵn mã ID của bạn). Hãy làm theo 3 bước sau:",
         color=discord.Color.blue()
     )
     embed.add_field(
-        name="Bước 1: Cài đặt thư viện (Chỉ cần làm 1 lần trên máy)",
-        value="Mở thư mục bất kỳ, gõ `cmd` vào thanh địa chỉ rồi Enter. Ở bảng đen hiện ra, gõ lệnh:\n`pip install psutil requests`",
+        name="Bước 1: Cài đặt thư viện (Chỉ làm 1 lần)",
+        value="Mở thư mục chứa file, gõ `cmd` vào thanh đường dẫn phía trên rồi ấn Enter. Tại cửa sổ màu đen hiện lên, copy và dán lệnh sau rồi ấn Enter:\n`pip install psutil requests`",
         inline=False
     )
     embed.add_field(
         name="Bước 2: Khởi chạy file",
-        value="Tải file `pc_agent.py` mà bot vừa gửi riêng vào Tin nhắn (DM) của bạn xuống máy, sau đó **click đúp** vào file đó là xong!",
+        value="Tải file `pc_agent.py` ở bên trên về máy tính của bạn, sau đó **click đúp chuột** vào file đó để chạy.",
         inline=False
     )
     embed.add_field(
-        name="Bước 3: Trải nghiệm",
-        value="• Gõ `!mypc` để kiểm tra thông số máy.\n• Gõ `!pccmd sleep` hoặc `!pccmd shutdown` để điều khiển máy từ xa.",
+        name="Bước 3: Sử dụng lệnh trên Server",
+        value="• Gõ `!mypc` để kiểm tra CPU, RAM, Pin máy tính.\n• Gõ `!pccmd sleep` hoặc `!pccmd shutdown` để khóa/tắt máy từ xa.",
         inline=False
     )
+    embed.set_footer(text="Hệ thống Trạm điều khiển Local PC bảo mật tuyệt đối")
 
     try:
-        await ctx.author.send("📂 Đây là file `pc_agent.py` độc quyền của bạn:", file=file)
-        await ctx.send(f"✅ {ctx.author.mention} Kiểm tra **Tin nhắn riêng (DM)** ngay nhé! Bot đã gửi file `pc_agent.py` được cấu hình sẵn cho riêng bạn ở đó.")
+        await ctx.author.send("📂 Đây là file `pc_agent.py` độc quyền và hướng dẫn dành riêng cho bạn:", file=file, embed=embed)
+        await ctx.send(f"✅ {ctx.author.mention} Kiểm tra **Tin nhắn riêng (DM)** ngay nhé! Bot đã gửi file kèm hướng dẫn chi tiết sang đó rồi.")
     except discord.Forbidden:
-        await ctx.send(f"⚠️ {ctx.author.mention} Bạn đang khóa Tin nhắn riêng (DM), bot không gửi file cá nhân được. Đây là file của bạn:", file=file, embed=embed)
+        await ctx.send(f"⚠️ {ctx.author.mention} Bạn đang khóa Tin nhắn riêng (DM), bot không gửi file được. Hãy mở khóa DM rồi gõ lại lệnh nhé!", file=file, embed=embed)
 
 
 # --- HỆ THỐNG BẮT LỖI TỔNG (GLOBAL ERROR HANDLER) GIÚP CHỐNG SPAM LỆNH ---
